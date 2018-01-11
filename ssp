@@ -33,7 +33,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.175';
+our $VERSION = '4.99.176';
 
 # Global variables that alter application runtime
 our $opt_timeout;    # How long to wait for system commands to finish executing
@@ -271,32 +271,20 @@ sub run {
     check_for_ea3();
 
     new_async_job( 'long_check_list', \&long_check_list );
-    new_async_job( 'build_rpm_list',  \&build_rpm_list );
+    new_async_job( 'print_rpm_list',  \&print_rpm_list );
 
     event_loop();
 
     print async_job_result('long_check_list');
 
-    @extended_rpm_list = map {
-        my ( $arch, $name, $version, $release ) = split( /\t/, $_ );
-        {
-            'name'    => defined $name    ? $name    : '',
-            'arch'    => defined $arch    ? $arch    : '',
-            'version' => defined $version ? $version : '',
-            'release' => defined $release ? $release : '',
-        }
-    } split( /\n/, async_job_result('build_rpm_list') );
-
-    if ( scalar @extended_rpm_list > 1 ) {
-        @rpm_list = map { "$_->{name}-$_->{version}-$_->{release}" } @extended_rpm_list;
-    }
-
     # These are run closer to the end since it has the potential to take the longest due to RPM usage
+    @extended_rpm_list = build_rpm_list( async_job_result('print_rpm_list') );
+    @rpm_list          = build_simple_rpm_list( \@extended_rpm_list );
     build_openssl_rpm_changelog();
 
-    # These require build_rpm_list() to have been run, so that @rpm_list is populated
-    check_for_openssl_heartbleed_bug();     # advisory
-    check_for_openssl_secadv_20140605();    # advisory
+    # These require @rpm_list
+    check_for_openssl_heartbleed_bug();
+    check_for_openssl_secadv_20140605();
     populate_mysql_rpm_versions_array();
     check_for_mysql_4();
     check_for_additional_rpms();
@@ -610,7 +598,6 @@ sub non_cpanel_checks_only {
     check_for_csf();
     check_for_prm();
     check_for_les();
-    check_for_els();
     check_for_usr_local_mis();
     check_for_opt_gsi_tools();
 
@@ -620,10 +607,11 @@ sub non_cpanel_checks_only {
     all_malware_checks();
 
     # These are run closer to the end since it has the potential to take the longest due to RPM usage
-    build_rpm_list();
+    @extended_rpm_list = build_rpm_list( get_rpm_list() );
+    @rpm_list          = build_simple_rpm_list( \@extended_rpm_list );
     build_openssl_rpm_changelog();
 
-    # These require build_rpm_list() to have been run, so that @rpm_list is populated
+    # These require @rpm_list
     populate_mysql_rpm_versions_array();
     check_for_mysql_4();
     check_for_additional_rpms();
@@ -735,10 +723,11 @@ sub dnsonly_checks_only {
     all_malware_checks();
 
     # These are run closer to the end since it has the potential to take the longest due to RPM usage
-    build_rpm_list();
+    @extended_rpm_list = build_rpm_list( get_rpm_list() );
+    @rpm_list          = build_simple_rpm_list( \@extended_rpm_list );
     build_openssl_rpm_changelog();
 
-    # These require build_rpm_list() to have been run, so that @rpm_list is populated
+    # These require @rpm_list
     check_for_openssl_heartbleed_bug();
     check_for_openssl_secadv_20140605();
 
@@ -5405,12 +5394,11 @@ sub check_for_multiple_imagemagick_installs {
 sub check_for_kernel_headers_rpm {
     if ( !-f '/usr/include/linux/limits.h' ) {
         print_warn('Missing file: ');
-        print_warning('/usr/include/linux/limits.h not found. This can cause problems with EA. kernel-headers RPM missing/broken?');
-        return;
+        print_warning('/usr/include/linux/limits.h not found. This can cause problems with EA3. kernel-headers RPM missing/broken?');
     }
     if ( @rpm_list && !grep { /^kernel-headers-/ } @rpm_list ) {
         print_warn('kernel-headers RPM: ');
-        print_warning('not found. This can cause problems with EA');
+        print_warning('not found. This can cause problems with EA3 and compiling various WHM/cPanel wrapper binaries');
     }
 }
 
@@ -8252,13 +8240,36 @@ sub check_for_cgls {
 ## END malware checks
 
 sub build_rpm_list {
-    return if @extended_rpm_list;    # already did this, don't do it again
+    my ($rpm_list) = @_;
+    return unless $rpm_list;
+    return map {
+        my ( $arch, $name, $version, $release ) = split( /\t/, $_ );
+        {
+            'name'    => defined $name    ? $name    : '',
+            'arch'    => defined $arch    ? $arch    : '',
+            'version' => defined $version ? $version : '',
+            'release' => defined $release ? $release : '',
+        }
+    } split( /\n/, $rpm_list );
+}
 
-    local $opt_timeout = $opt_timeout ? $opt_timeout : 25;
+sub build_simple_rpm_list {
+    my ($listref) = @_;
+    return unless scalar @$listref > 1;
+    return map { "$_->{name}-$_->{version}-$_->{release}" } @$listref;
+}
 
-    my $rpm_list = timed_run( $opt_timeout, 'rpm', '-qa', '--queryformat', q{%{ARCH}\t%{NAME}\t%{VERSION}\t%{RELEASE}\n} );
+sub get_rpm_list {
+    my ($quiet) = @_;
+    my $timeout = $opt_timeout ? $opt_timeout : 25;
+    print_info2("RPM check (running \"rpm -qa ...\"). This will timeout after $timeout seconds.") unless $quiet;
+    return timed_run( $timeout, 'rpm', '-qa', '--queryformat', q{%{ARCH}\t%{NAME}\t%{VERSION}\t%{RELEASE}\n} );
+}
 
-    print $rpm_list;
+sub print_rpm_list {
+
+    # used by async job
+    print get_rpm_list(1);
 
     # 0 because this is an exit value.
     return 0;
