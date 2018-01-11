@@ -33,7 +33,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.174';
+our $VERSION = '4.99.175';
 
 # Global variables that alter application runtime
 our $opt_timeout;    # How long to wait for system commands to finish executing
@@ -6164,7 +6164,7 @@ sub check_for_license_info {
 
     if ( $is_kernelcare && !exists( $license{'kernelcare'} ) ) {
         print_warn('KernelCare: ');
-        print_warning(qq{MAY NOT BE LICENSED! - verify at $helper_url - use "LICENSE - CloudLinux Not Licensed through cPanel" if relevant});
+        print_warning(qq{MAY NOT BE LICENSED! - verify at $helper_url - use "LICENSE - Kernelcare Not Licensed through cPanel" if relevant});
     }
 }
 
