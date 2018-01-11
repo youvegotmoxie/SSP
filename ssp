@@ -598,7 +598,6 @@ sub non_cpanel_checks_only {
     check_for_csf();
     check_for_prm();
     check_for_les();
-    check_for_els();
     check_for_usr_local_mis();
     check_for_opt_gsi_tools();
 
