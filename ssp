@@ -57,7 +57,6 @@ our $CPANEL_VERSION;    # Current cpanel version of system
 our $HOSTNAME;
 our $OS;
 our $IS_CPANEL;
-our $IS_CPANEL_SOLO;
 our $IS_KERNELCARE;
 our ( $OS_RELEASE, $OS_TYPE, $OS_VERSION, $OS_ISES, $IS_AMAZON, $IS_CLOUDLINUX );
 our $EXTERNAL_IP_ADDRESS;
@@ -135,7 +134,6 @@ sub init {
     $MYSQL_DATADIR   = get_mysql_datadir();           # needs $MYSQL_CONF
     $MYSQL_ERROR_LOG = get_mysql_error_log();         # needs $MYSQL_CONF
     $IS_CPANEL       = 1 if -d '/usr/local/cpanel';
-    $IS_CPANEL_SOLO  = is_cpanel_solo();
 
     if ($IS_CPANEL) {
         $CPANEL_VERSION  = get_cpanel_version();
@@ -659,6 +657,7 @@ sub dnsonly_checks_only {
     check_for_clustering();
     check_sysinfo();
     print_if_using_other_dns();
+    check_for_license_info();
 
     ## [WARN]
     check_port_hash();
@@ -825,19 +824,50 @@ sub is_kernelcare {
     return -e '/usr/bin/kcarectl';
 }
 
-sub is_cpanel_solo {
-    my $is_cpanel_solo;
-
+sub get_cpanel_license_file_info_href {
+    my %license;
     if ( open my $license_fh, '<', $CPANEL_LICENSE_FILE ) {
+        my @license_text;
         while (<$license_fh>) {
-            if (m{ \A maxusers: \s 1 \Z }xms) {
-                $is_cpanel_solo = 1;
-                last;
-            }
+            last if m{ \A -----BEGIN }xms;
+            next unless m{ \A \p{PosixPrint}+ \Z }xms;
+            chomp;
+            push @license_text, $_;
         }
         close $license_fh;
+        %license = map { ( split( /:\s+/, $_, 2 ) )[ 0, 1 ] } @license_text;
     }
-    return $is_cpanel_solo;
+    return \%license;
+}
+
+sub license_file_is_cloudlinux {
+    my $href = get_cpanel_license_file_info_href();
+    return if not exists $href->{products};
+    return 1 if grep { /cloudlinux/ } $href->{products};
+    return 0;
+}
+
+sub license_file_is_cpanel {
+    my $href = get_cpanel_license_file_info_href();
+    return if not exists $href->{products};
+    return 1 if grep { /cpanel/ } $href->{products};
+    return 0;
+}
+
+sub license_file_is_dnsonly {
+    my $href = get_cpanel_license_file_info_href();
+    return if not exists $href->{products};
+    return 1 if grep { /dnsonly/ } $href->{products};
+    return 0;
+}
+
+sub license_file_is_solo {
+
+    # products =~ cpanel and maxusers = 1 indicates Solo.
+    my $href = get_cpanel_license_file_info_href();
+    return if not exists $href->{products} or not exists $href->{maxusers};
+    return 1 if ( grep { /cpanel/ } $href->{products} and $href->{maxusers} == 1 );
+    return 0;
 }
 
 sub get_cpanel_version {
@@ -3746,7 +3776,7 @@ sub check_var_cpanel_users {
         print_warning("$userdatadomains (generate it with /scripts/updateuserdatacache --force)");
     }
 
-    if ( $IS_CPANEL_SOLO and scalar @files > 1 ) {
+    if ( license_file_is_solo() and scalar @files > 1 ) {
         print_crit('License: ');
         print_critical('found more than 1 account (under /var/cpanel/users) but this is licensed for cPanel Solo!');
     }
@@ -6103,11 +6133,10 @@ sub check_for_license_info {
     my $host       = 'verify.cpanel.net';
     my $helper_url = "http://" . $host;
     my %license;
+    my $file_is_solo      = license_file_is_solo();
+    my $file_is_dnsonly   = license_file_is_dnsonly();
+    my $dnsonly_touchfile = '/var/cpanel/dnsonly';
 
-    if ($IS_CPANEL_SOLO) {
-        print_info('License: ');
-        print_normal('cPanel Solo (limited to 1 account)');
-    }
     if ( defined($EXTERNAL_IP_ADDRESS) ) {
         my $url = '/?ip=' . $EXTERNAL_IP_ADDRESS;
         $helper_url .= $url;
@@ -6145,6 +6174,31 @@ sub check_for_license_info {
     if ( ( defined($EXTERNAL_IP_ADDRESS) && defined($EXTERNAL_LICENSE_ADDRESS) ) && !( $EXTERNAL_IP_ADDRESS eq $EXTERNAL_LICENSE_ADDRESS ) ) {
         print_crit('License: ');
         print_critical("external IP detected via port 80 [ $EXTERNAL_IP_ADDRESS ] does not match IP detected via port 2089 [ $EXTERNAL_LICENSE_ADDRESS ] which can result in unexpected cPanel license update behavior.");
+    }
+
+    if ($file_is_solo) {
+        print_info('License: ');
+        print_normal('cPanel Solo (limited to 1 account)');
+    }
+
+    if ($file_is_dnsonly) {
+        print_info('License: ');
+        print_normal('DNSONLY');
+    }
+
+    my $cpanel_17906_text =
+      "         \\_ If license does not update correctly then fork ticket for license issue if not related to current issue.\n         \\_ In license-issue ticket -- tag case CPANEL-17906, diagnose and resolve possible network-related causes of license update failure and update case if this is successful -- if license update issue can not be resolved, send 'ESCALATE - License issue to Dev' response and escalate ticket to 'QA/Development'.";
+    if ( cpanel_version_is(qw ( >= 11.68.0.25 )) ) {
+        if ( not $file_is_dnsonly and -e $dnsonly_touchfile ) {
+            print_crit('License: ');
+            print_critical("$dnsonly_touchfile exists but installed license file is not DNSONLY.  Try using '/usr/local/cpanel/cpkeyclt --force' to update license.");
+            print_critical($cpanel_17906_text);
+        }
+        if ( $file_is_dnsonly and not -e $dnsonly_touchfile ) {
+            print_crit('License: ');
+            print_critical("Installed license file is DNSONLY but $dnsonly_touchfile does not exist.  Try using '/usr/local/cpanel/cpkeyclt --force' to update license.");
+            print_critical($cpanel_17906_text);
+        }
     }
 
     if ( $IS_CLOUDLINUX && !exists( $license{'cloudlinux'} ) ) {
