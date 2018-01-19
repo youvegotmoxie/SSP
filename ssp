@@ -20,6 +20,7 @@ THE SOFTWARE LICENSED HEREUNDER IS PROVIDED "AS IS" AND CPANEL HEREBY DISCLAIMS 
 
 package SSP;
 
+use 5.006;
 use strict;
 use warnings;
 use File::Find;
@@ -51,7 +52,6 @@ our $PURE_FTPD_CONF_FILE = '/etc/pure-ftpd.conf';
 # Global variables initialized at application initialization
 our @PHPINI;
 our $EA4;            # Boolean to determine if system is running EasyApache 4
-our $EA4_PHP;        # EA4 PHP info
 our $HTTPD_BIN;
 our $CPANEL_VERSION;    # Current cpanel version of system
 our $HOSTNAME;
@@ -59,9 +59,6 @@ our $OS;
 our $IS_CPANEL;
 our $IS_KERNELCARE;
 our ( $OS_RELEASE, $OS_TYPE, $OS_VERSION, $OS_ISES, $IS_AMAZON, $IS_CLOUDLINUX );
-our $EXTERNAL_IP_ADDRESS;
-our $EXTERNAL_LICENSE_ADDRESS;
-our $TIERS;
 our @LOCAL_IPADDRS_LIST;
 our @PROCESS_LIST;
 our $PROCESS_REF;       # Hash of processes running on system along with details
@@ -123,8 +120,6 @@ sub init {
     $HOSTINFO                   = get_hostinfo();
     $CPUINFO                    = get_cpuinfo();
     $MEMINFO                    = get_meminfo();
-    $EXTERNAL_IP_ADDRESS        = get_external_ip('80');
-    $EXTERNAL_LICENSE_ADDRESS   = get_external_ip('2089');
     $IS_KERNELCARE              = is_kernelcare();
     $HOSTNAME                   = hostname();
     $OS                         = get_os();
@@ -138,10 +133,8 @@ sub init {
     if ($IS_CPANEL) {
         $CPANEL_VERSION  = get_cpanel_version();
         $EA4             = is_ea4();
-        $EA4_PHP         = _get_installed_ea4_php();
         $HTTPD_BIN       = find_httpd_bin();            # location of operative httpd
         @PHPINI          = get_phpini();
-        $TIERS           = get_tiers_file();
         $PURE_FTPD_CONF  = get_pureftpd_conf();
         $PRO_FTPD_CONF   = get_proftpd_conf();
         $EXIM_LOCAL_OPTS = get_exim_localopts();
@@ -213,6 +206,16 @@ sub init {
         die;
     };
 
+    # Work towards replacing the "slowest" globals defined above with memoized functions.
+    # It is only helpful to memoize something that is used at least twice.
+    # There is some memoize overhead, but it should be a safe bet for anything with unpredictable runtimes (network, heavy disk I/O, external processes).
+    do_memoize(
+        qw (
+          get_cpanel_license_file_info_href
+          get_installed_ea4_php_href
+          get_myip
+          )
+    );
     return 1;
 }
 
@@ -1787,8 +1790,9 @@ sub check_for_cpanel_update {
         return;
     }
 
-    return unless $TIERS;
-    my @tiers = split /\n/, $TIERS;
+    my $tiers = get_tiers_file();
+    return unless $tiers;
+    my @tiers = split /\n/, $tiers;
 
     for my $line (@tiers) {
         if ( $line =~ m{ \A (.*) : (\d+\.\d+\.\d+\.\d+) \z }xms ) {
@@ -2095,11 +2099,12 @@ sub print_ea4_php_configuration {
     return if !$EA4;
     my $info            = 'UNKNOWN';
     my $fpm_jail_toggle = '/var/cpanel/feature_toggles/apachefpmjail';
+    my $ea4_php         = get_installed_ea4_php_href();
     print_info('PHP Default: ');
-    if ( defined($EA4_PHP) && defined( $EA4_PHP->{default} ) && defined( $EA4_PHP->{ $EA4_PHP->{default} }->{release_version} ) && defined( $EA4_PHP->{ $EA4_PHP->{default} }->{handler} ) ) {
+    if ( defined($ea4_php) && defined( $ea4_php->{default} ) && defined( $ea4_php->{ $ea4_php->{default} }->{release_version} ) && defined( $ea4_php->{ $ea4_php->{default} }->{handler} ) ) {
         $info = '[ EA4 ]';
-        $info .= " [ $EA4_PHP->{ $EA4_PHP->{default} }->{release_version} ( $EA4_PHP->{default} ) ]";
-        $info .= " [ $EA4_PHP->{ $EA4_PHP->{default} }->{handler} ]";
+        $info .= " [ $ea4_php->{ $ea4_php->{default} }->{release_version} ( $ea4_php->{default} ) ]";
+        $info .= " [ $ea4_php->{ $ea4_php->{default} }->{handler} ]";
     }
     print_normal($info);
     if ( -e $fpm_jail_toggle ) {
@@ -2112,7 +2117,7 @@ sub print_ea4_php_configuration {
     }
 }
 
-sub _get_installed_ea4_php {
+sub get_installed_ea4_php_href {
 
     # Only supports WHM 54+
     return if !$EA4;
@@ -2249,14 +2254,19 @@ sub print_if_using_other_dns {
 
 sub print_if_mod_userdir {
     return unless defined $APACHE_MODULES->{'userdir_module'};
-    if ( $EA4 && cpanel_version_is(qw( >= 11.59.0.0 )) ) {
-        print_info('Mod Userdir: ');
-        print_warning("will not execute PHP scripts via PHP-FPM");
+
+    if ($EA4) {
+        my $ea4_php = get_installed_ea4_php_href();
+        if ( cpanel_version_is(qw( >= 11.59.0.0 )) ) {
+            print_info('Mod Userdir: ');
+            print_warning("will not execute PHP scripts via PHP-FPM");
+        }
+        if ( defined($ea4_php) && defined( $ea4_php->{default} ) && defined( $ea4_php->{ $ea4_php->{default} }->{handler} ) && $ea4_php->{ $ea4_php->{default} }->{handler} eq "cgi" ) {
+            print_info('Mod Userdir: ');
+            print_warning("will not execute PHP scripts via cgi handler");
+        }
     }
-    if ( defined($EA4_PHP) && defined( $EA4_PHP->{default} ) && defined( $EA4_PHP->{ $EA4_PHP->{default} }->{handler} ) && $EA4_PHP->{ $EA4_PHP->{default} }->{handler} eq "cgi" ) {
-        print_info('Mod Userdir: ');
-        print_warning("will not execute PHP scripts via cgi handler");
-    }
+
     if ( defined $APACHE_MODULES->{'passenger_module'} ) {
         print_info('Mod Userdir: ');
         print_warning('doesn\'t work with Mod Passenger');
@@ -2464,6 +2474,8 @@ sub print_mailserver_info {
 }
 
 sub print_ftpserver_info {
+    my $external_ip_address = get_external_ip();
+
     print_info('FTP Server: ');
 
     my $passiveports = "";
@@ -2504,7 +2516,7 @@ sub print_ftpserver_info {
 
     my $passivetext = $passiveports ? "enabled - " . ( $fwppactive ? "allowed in iptables" : "not found in iptables" ) : "not enabled";
 
-    if ( $passiveip ne "" && defined($EXTERNAL_IP_ADDRESS) && $passiveip ne $EXTERNAL_IP_ADDRESS && defined( $CPCONF{'ftpserver'} ) ) {
+    if ( $passiveip ne "" && defined($external_ip_address) && $passiveip ne $external_ip_address && defined( $CPCONF{'ftpserver'} ) ) {
         if ( $CPCONF{'ftpserver'} eq 'proftpd' ) {
             $passivetext .= " - MasqueradeAddress ( $passiveip ) doesn't match license IP";
         }
@@ -4111,11 +4123,12 @@ sub check_mounts {
 sub check_for_unsupported_nat {
     return if -e '/var/cpanel/cpnat';
     my @external_ipaddrs;
+    my $external_ip_address = get_external_ip();
 
-    if ( defined($EXTERNAL_IP_ADDRESS) ) {
-        if ( !grep { /$EXTERNAL_IP_ADDRESS/ } @LOCAL_IPADDRS_LIST ) {
+    if ( defined($external_ip_address) ) {
+        if ( !grep { /$external_ip_address/ } @LOCAL_IPADDRS_LIST ) {
             print_warn('NAT: ');
-            print_warning("external IP address $EXTERNAL_IP_ADDRESS is not bound to server");
+            print_warning("external IP address $external_ip_address is not bound to server");
         }
         return;
     }
@@ -6133,12 +6146,14 @@ sub check_for_license_info {
     my $host       = 'verify.cpanel.net';
     my $helper_url = "http://" . $host;
     my %license;
-    my $file_is_solo      = license_file_is_solo();
-    my $file_is_dnsonly   = license_file_is_dnsonly();
-    my $dnsonly_touchfile = '/var/cpanel/dnsonly';
+    my $file_is_solo             = license_file_is_solo();
+    my $file_is_dnsonly          = license_file_is_dnsonly();
+    my $dnsonly_touchfile        = '/var/cpanel/dnsonly';
+    my $external_ip_address      = get_external_ip();
+    my $external_license_address = get_external_license_ip();
 
-    if ( defined($EXTERNAL_IP_ADDRESS) ) {
-        my $url = '/?ip=' . $EXTERNAL_IP_ADDRESS;
+    if ( defined($external_ip_address) ) {
+        my $url = '/?ip=' . $external_ip_address;
         $helper_url .= $url;
         if ( my $reply = _http_get( Host => $host, Path => $url ) ) {
             if ( $reply =~ /alt="cPanel\/WHM"/ ) {
@@ -6159,7 +6174,7 @@ sub check_for_license_info {
         }
         if ( my $licenses = join " ", map { "[$license{$_}]" } sort keys %license ) {
             print_info('License: ');
-            print_normal("$EXTERNAL_IP_ADDRESS has $licenses");
+            print_normal("$external_ip_address has $licenses");
         }
         else {
             print_info('License: ');
@@ -6169,11 +6184,11 @@ sub check_for_license_info {
             print_warn('License: ');
             print_warning("may be a one-time cPanel license -- manually verify at [ ${helper_url} ]");
         }
-    }
+        if ( ( defined($external_license_address) ) && !( $external_ip_address eq $external_license_address ) ) {
+            print_crit('License: ');
+            print_critical("external IP detected via port 80 [ $external_ip_address ] does not match IP detected via port 2089 [ $external_license_address ] which can result in unexpected cPanel license update behavior.");
+        }
 
-    if ( ( defined($EXTERNAL_IP_ADDRESS) && defined($EXTERNAL_LICENSE_ADDRESS) ) && !( $EXTERNAL_IP_ADDRESS eq $EXTERNAL_LICENSE_ADDRESS ) ) {
-        print_crit('License: ');
-        print_critical("external IP detected via port 80 [ $EXTERNAL_IP_ADDRESS ] does not match IP detected via port 2089 [ $EXTERNAL_LICENSE_ADDRESS ] which can result in unexpected cPanel license update behavior.");
     }
 
     if ($file_is_solo) {
@@ -8463,9 +8478,9 @@ sub check_ea4_php_fpm {
     return 1;
 }
 
-sub get_external_ip {
+sub get_myip {
     my ($port) = @_;
-    die "get_external_ip port number not specified" if !$port;
+    $port = defined $port ? $port : '80';
 
     # myip.cpanel.net supports HTTP ports 80, 2089 and HTTPS port 443.
     my $ip;
@@ -8475,6 +8490,14 @@ sub get_external_ip {
         chomp $ip;
     }
     return $ip;
+}
+
+sub get_external_ip {
+    return get_myip();
+}
+
+sub get_external_license_ip {
+    return get_myip('2089');
 }
 
 sub _http_get {
@@ -8584,7 +8607,59 @@ CPU: $cpu w/ $cores core(s)
 END_OF_TEMPLATE
 }
 
-{
+{    # Memoize
+
+    my $tried_import;
+
+    sub import_memoize {
+        return if $tried_import;
+        $tried_import = 1;
+        ## no critic (StringyEval)
+        eval q(
+            # Memoize was first released with perl v5.7.3
+            # Always check defined &memoize before using;
+            require Memoize;
+            Memoize->import();
+        );
+        ## use critic
+    }
+
+    sub do_memoize {    ## no critic (RequireArgUnpacking)
+        import_memoize();
+        return unless defined &memoize;
+        for my $func (@_) {
+            if ( defined &$func ) {
+                memoize( $func, _memoize_options($func) );
+            }
+            else {
+                print STDERR "SSP DEBUG - Tried to memoize function that does not exist: $func\n";
+            }
+        }
+    }
+
+    sub _memoize_options {
+        my $func = shift;
+        my %memoize_options;
+        $memoize_options{'LIST_CACHE'} = 'MERGE' if _memoize_should_merge_cache($func);
+        return %memoize_options;
+    }
+
+    sub _memoize_should_merge_cache {
+        my $func = shift;
+
+        # It might be worth doing this to everything, SSP shouldn't have any functions that return different values for scalar/list contexts.
+        # But, we'll start conservatively by only merging caches for the boolean ("_is_") and ref-returning ("_href") functions.
+        # This means that functions which actually return a list (not a ref to a list) MUST be called in list context the first time
+        return 1 if $func =~ m{
+                  (^|_)is_
+                | _(a|h)?ref$
+            }xms;
+        return 0;
+    }
+
+}
+
+{    # Async jobs
     my $fds;
     my %jobs;
     my %results;
