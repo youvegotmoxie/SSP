@@ -833,7 +833,7 @@ sub get_cpanel_license_file_info_href {
         my @license_text;
         while (<$license_fh>) {
             last if m{ \A -----BEGIN }xms;
-            next unless m{ \A \p{PosixPrint}+ \Z }xms;
+            next unless m{ \A \p{IsPrint}+ \Z }xms;
             chomp;
             push @license_text, $_;
         }
