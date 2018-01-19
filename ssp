@@ -1145,7 +1145,7 @@ sub print_tip {
     print BOLD WHITE ON_BLACK "\tDid you know? $tips[$num]" . RESET . "\n\n";
 }
 
-sub get_tiers_file {
+sub get_tiers_file {    #TODO: Get rid of this in favor of get_tiers_json_href if it works out.
     return _http_get( Host => 'httpupdate.cpanel.net', Path => '/cpanelsync/TIERS' );
 }
 
@@ -1757,13 +1757,17 @@ sub print_cpanel_info {
         '64' => { expires => 0,          text => 'September 21, 2017' },
         '66' => { expires => 0,          text => 'December 4, 2017' },
     );
-    my @ver = split( /\./, $CPANEL_VERSION, 4 );
-    my $major_ver = ( defined $ver[1] && $ver[1] =~ /^\d+$/ ) ? $ver[1] : undef;
+
+    my ( $parent_ver, $major_ver ) = split( /\./, $CPANEL_VERSION, 3 );
     my $expire_info;
-    if ($major_ver) {
+    if ( defined $parent_ver and defined $major_ver ) {
         $major_ver++ if $major_ver % 2;    # Bump odd dev versions
-        $expire_info = "has expired." if $major_ver <= 54;
-        $expire_info = "ended on " . $eol{$major_ver}->{'text'} . "." if exists $eol{$major_ver} && $eol{$major_ver}->{'expires'} <= time();
+        $expire_info = 'has expired.' if $major_ver <= 54;
+        my $found_tiers_aref = get_tiers_for_version_aref( $parent_ver . '.' . $major_ver );
+        if ( defined $found_tiers_aref and scalar @{$found_tiers_aref} == 0 ) {
+            $expire_info = 'has expired (version is not a named or LTS tier in TIERS.json)';
+        }
+        $expire_info = 'ended on ' . $eol{$major_ver}->{'text'} . '.' if exists $eol{$major_ver} && $eol{$major_ver}->{'expires'} <= time();
     }
     if ($expire_info) {
         print_crit('cPanel Info: ');
@@ -8609,8 +8613,80 @@ CPU: $cpu w/ $cores core(s)
 END_OF_TEMPLATE
 }
 
-{    # Memoize
+sub decode_json {
+    my ($raw_json) = @_;
+    return unless my $json = json();
+    my $href;
+    eval { $href = $json->new->utf8->decode($raw_json); };    # All or nothing, just be quiet.
+    return $href;
+}
 
+sub get_tiers_json_href {
+    my $raw = _http_get( Host => 'httpupdate.cpanel.net', Path => '/cpanelsync/TIERS.json' );
+    return unless $raw;
+    my $href = decode_json($raw);
+    return if not exists $href->{'tiers'};
+    return $href;
+}
+
+sub get_tiers_for_version_aref {
+    my ($version) = @_;
+    return unless my $tiers_ref = get_tiers_json_href();
+    my ( $parent_ver, $major_ver ) = split( /\./, $version, 3 );
+    my @found_tiers = ();
+    return unless defined $parent_ver and $parent_ver =~ /^\d+$/;
+    return unless defined $major_ver  and $major_ver =~ /^\d+$/;
+    $major_ver++ if $major_ver % 2;    # Bump odd dev versions
+    my $full_ver = join( '.', $parent_ver, $major_ver );
+
+    if ( exists $tiers_ref->{'tiers'}->{$full_ver} ) {
+        for my $tier ( @{ $tiers_ref->{'tiers'}->{$full_ver} } ) {
+            if ( exists $tier->{'is_lts'} and $tier->{'is_lts'} ) {
+                push @found_tiers, $full_ver . ' LTS';
+            }
+            if ( exists $tier->{'named'} ) {
+                for my $named_tier ( @{ $tier->{'named'} } ) {
+                    push @found_tiers, $named_tier;
+                }
+            }
+        }
+    }
+    return \@found_tiers;
+}
+
+{    # JSON
+    my $json;
+    my $tried_import;
+
+    sub json {
+        return $json if $json;
+        return if $tried_import;
+        $json = import_json();
+        return $json;
+    }
+
+    sub import_json {
+        return if $tried_import;
+        $tried_import = 1;
+        my $try = _choose_json_package();
+        eval {
+            return unless $try->can('decode');
+            return unless $try->can('encode');
+            1;
+        } and return $try;
+    }
+
+    sub _choose_json_package {
+        return 'Cpanel::JSON::XS' if $INC{'Cpanel/JSON/XS.pm'};
+        return 'JSON::XS'         if $INC{'JSON/XS.pm'};
+        return 'Cpanel::JSON::XS' if eval { require Cpanel::JSON::XS; 1; };
+        return 'JSON::XS'         if eval { require JSON::XS; 1; };
+        return 'JSON::PP'         if eval { require JSON::PP; 1; };
+    }
+
+}
+
+{    # Memoize
     my $tried_import;
 
     sub import_memoize {
