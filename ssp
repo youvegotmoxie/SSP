@@ -3391,6 +3391,7 @@ sub check_for_non_default_permissions {
         '/usr/share'                            => { mode => ['0755'] },
         '/usr/share/zoneinfo'                   => { mode => ['0755'] },
         '/var'                                  => { mode => ['0755'] },
+        '/var/cpanel/analytics/system_id'       => { attr_check => [ 'APPEND-ONLY', 'UNDELETABLE' ] },
         '/var/cpanel'                           => { mode => [ '0755', '0711', '0555' ], attr_recursive => 1 },
         '/var/cpanel/backups'                   => { mode => [ '0755', '0750' ] },
         '/var/cpanel/backups/config'            => { mode => ['0644'] },
@@ -5841,7 +5842,8 @@ sub check_for_rpm_overrides {
     if (
            $md5_local
         && $md5_local =~ m{ \A (
-                                 1311deca9b898350d3660f6ea381af4b
+                                 12f23aecb8622647469273aa00c2bf63
+                               | 1311deca9b898350d3660f6ea381af4b
                                | 1d9f5d246ef2c9ab29f33cf00a3af9a5
                                | 2a18948c9a0419d4398134dddcd72367
                                | 2c8e757e0e38a87f68e8eeb7bd306bf6
