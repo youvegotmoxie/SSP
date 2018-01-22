@@ -2051,7 +2051,7 @@ sub print_ea3_php_configuration {
                     $EA3_PHP4VERSION = $1;
                 }
                 else {
-                    $EA3_PHP4VERSION = '(version unknown)';
+                    $EA3_PHP4VERSION = '(ea3 php4 version unknown)';
                 }
 
                 print_info('PHP Secondary: ');
