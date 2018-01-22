@@ -1,6 +1,6 @@
 PROJECT=ssp
 SHELL=/bin/sh
-PATH=/usr/local/cpanel/3rdparty/perl/524/bin:/usr/local/cpanel/3rdparty/bin:/sbin:/bin:/usr/sbin:/usr/bin
+PATH=/usr/local/cpanel/3rdparty/perl/526/bin:/usr/local/cpanel/3rdparty/perl/524/bin:/usr/local/cpanel/3rdparty/bin:/sbin:/bin:/usr/sbin:/usr/bin
 PERLCRITIC=perlcritic
 PERLCRITICRC=tools/.perlcriticrc
 PERLTIDY=perltidy
