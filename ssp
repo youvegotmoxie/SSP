@@ -2045,16 +2045,18 @@ sub print_ea3_php_configuration {
         }
 
         if ( $EA3_PHP4HANDLER && $EA3_PHP4HANDLER ne 'none' ) {
-            my @php_v = split /\n/, timed_run( 0, '/usr/local/php4/bin/php', '-v' );
-            if ( @php_v && $php_v[0] =~ /^PHP\s(\S+)\s(\S+)/ ) {
-                $EA3_PHP4VERSION = $1;
-            }
-            else {
-                $EA3_PHP4VERSION = '(version unknown)';
-            }
+            if ( -x '/usr/local/php4/bin/php' ) {
+                my @php_v = split /\n/, timed_run( 0, '/usr/local/php4/bin/php', '-v' );
+                if ( @php_v && $php_v[0] =~ /^PHP\s(\S+)\s(\S+)/ ) {
+                    $EA3_PHP4VERSION = $1;
+                }
+                else {
+                    $EA3_PHP4VERSION = '(version unknown)';
+                }
 
-            print_info('PHP Secondary: ');
-            print_normal("PHP $EA3_PHP4VERSION $EA3_PHP4HANDLER $has_ea3_suexec");
+                print_info('PHP Secondary: ');
+                print_normal("PHP $EA3_PHP4VERSION $EA3_PHP4HANDLER $has_ea3_suexec");
+            }
         }
     }
 
