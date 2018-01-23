@@ -32,6 +32,7 @@ use Time::Local qw{timelocal};
 use IPC::Open3;
 use Cwd qw(abs_path);
 use Getopt::Long();
+use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
 our $VERSION = '4.99.177';
@@ -8750,7 +8751,8 @@ sub get_tiers_for_version_aref {
 
         defined $fds or $fds = '';
 
-        pipe my ( $out_r, $out_w );
+        pipe my ( $out_r,    $out_w );
+        pipe my ( $dumper_r, $dumper_w );
 
         my $pid = fork;
 
@@ -8758,22 +8760,38 @@ sub get_tiers_for_version_aref {
 
         if ( $pid == 0 ) {
             close $out_r;
+            close $dumper_r;
 
             open STDIN,  '<',  '/dev/null';
             open STDOUT, '>&', $out_w or die "Unable to redirect stdout: $!";
             open STDERR, '>&', $out_w or die "Unable to redirect stderr: $!";
 
-            exit $coderef->(@args);
+            local $CRIT_BUFFER = '';
+            my $exit_value = $coderef->(@args);
+
+            # Using Data::Dumper instead of piping out $CRIT_BUFFER directly because want to return more complex data structures in the future.
+            my $dumper = Data::Dumper->new( [$CRIT_BUFFER], [qw(child_crit_buffer)] );
+            print $dumper_w $dumper->Purity(1)->Terse(0)->Indent(0)->Dump;
+            exit $exit_value;
         }
         close $out_w;
+        close $dumper_w;
 
         $jobs{$job_name} = {
-            buf => '',
-            fh  => $out_r,
+            pipes => {
+                out => {
+                    buf => '',
+                    fh  => $out_r,
+                },
+                dumper => {
+                    buf => '',
+                    fh  => $dumper_r,
+                },
+            },
             pid => $pid,
         };
-
-        vec( $fds, fileno($out_r), 1 ) = 1;
+        vec( $fds, fileno($out_r),    1 ) = 1;
+        vec( $fds, fileno($dumper_r), 1 ) = 1;
     }
 
     sub event_loop {
@@ -8781,29 +8799,34 @@ sub get_tiers_for_version_aref {
             last unless select my $ready = $fds, undef, undef, undef;
 
             foreach my $job_name ( keys %jobs ) {
+                foreach my $pipe ( keys %{ $jobs{$job_name}{pipes} } ) {
+                    my $buffer = \$jobs{$job_name}{pipes}{$pipe}{buf};
+                    my $fh     = $jobs{$job_name}{pipes}{$pipe}{fh};
+                    my $fileno = fileno($fh);
+                    if ( vec( $ready, $fileno, 1 ) ) {
+                        if ( read $fh, my $buf, 4096 ) {
+                            ${$buffer} .= $buf;
+                        }
+                        else {
+                            $results{$job_name}{$pipe} = $buffer;
 
-                my $buffer = \$jobs{$job_name}{buf};
-                my $fileno = fileno( $jobs{$job_name}{fh} );
-
-                if ( vec( $ready, $fileno, 1 ) ) {
-                    if ( read $jobs{$job_name}{fh}, my $buf, 4096 ) {
-                        ${$buffer} .= $buf;
-                    }
-                    else {
-                        $results{$job_name} = $buffer;
-
-                        vec( $fds, $fileno, 1 ) = 0;
-                        close $jobs{$job_name}{fh};
-                        delete $jobs{$job_name};
+                            vec( $fds, $fileno, 1 ) = 0;
+                            close $fh;
+                            delete $jobs{$job_name}{pipes}{$pipe};
+                        }
                     }
                 }
+                delete $jobs{$job_name} unless scalar keys %{ $jobs{$job_name}{pipes} };
             }
         }
     }
 
     sub async_job_result {
         my ($job_name) = @_;
-        return ${ $results{$job_name} };
+        my $child_crit_buffer;
+        defined $results{$job_name}{dumper} && defined ${ $results{$job_name}{dumper} } && eval ${ $results{$job_name}{dumper} };    ## no critic (StringyEval)
+        $CRIT_BUFFER .= $child_crit_buffer if $child_crit_buffer;
+        return ${ $results{$job_name}{out} };
     }
 }
 
