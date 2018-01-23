@@ -34,7 +34,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.177';
+our $VERSION = '4.99.178';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
@@ -6638,7 +6638,7 @@ sub check_for_processes_killed_by_oom {
             }
 
             # CentOS 6
-            if ( $line =~ /([[:alpha:]]{3}(?: \d\d|  \d) \d\d:\d\d:\d\d) (?:.*) kernel: \[ *\d*\.\d{6}\] Killed process (\d+) \((.*?)\) total-vm:(\d+)kB, anon-rss:(\d+)kB, file-rss:(\d+)kB/ ) {
+            if ( $line =~ /([[:alpha:]]{3}(?: \d\d|  \d) \d\d:\d\d:\d\d) (?:.*) kernel: \[ *\d*\.\d{6}\] Killed process (\d+)(?:, UID \d+,)? \((.*?)\) total-vm:(\d+)kB, anon-rss:(\d+)kB, file-rss:(\d+)kB/ ) {
                 push @killed_by_oom, "[$1] [pid: $2] [cmd: $3] [vm: $4 kB] [rss: $5 kB] [swap: $6 kB]";
                 $count++;
                 last if $count >= 10;
