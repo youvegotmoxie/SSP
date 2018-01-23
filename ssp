@@ -5924,6 +5924,9 @@ sub check_for_rpm_overrides {
     if ( cpanel_version_is(qw( >= 11.61.0.0 )) ) {
         $ignore_package{'perl522'} = 'uninstalled';    # Normal for WHM 62 upgrade process
     }
+    if ( cpanel_version_is(qw( >= 11.69.0.0 )) ) {
+        $ignore_package{'perl524'} = 'uninstalled';    # Normal for WHM 70 upgrade process
+    }
 
     eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
     return if $@;
