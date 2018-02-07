@@ -63,7 +63,6 @@ our ( $OS_RELEASE, $OS_TYPE, $OS_VERSION, $OS_ISES, $IS_AMAZON, $IS_CLOUDLINUX )
 our @LOCAL_IPADDRS_LIST;
 our @PROCESS_LIST;
 our $PROCESS_REF;       # Hash of processes running on system along with details
-our $PORT_REF;          # Hash of ports being listened on along with user/pid/etc
 our $IPCS_REF;
 our $HOSTINFO;
 our $CPUINFO;
@@ -115,7 +114,6 @@ sub init {
     @LOCAL_IPADDRS_LIST         = get_local_ipaddrs();
     @PROCESS_LIST               = get_process_list();
     $PROCESS_REF                = get_process_pid_hash();
-    $PORT_REF                   = get_lsof_port_hash();
     $IPCS_REF                   = get_ipcs_hash();
     $HOSTINFO                   = get_hostinfo();
     $CPUINFO                    = get_cpuinfo();
@@ -213,6 +211,7 @@ sub init {
           get_apache_modules_href
           get_cpanel_license_file_info_href
           get_installed_ea4_php_href
+          get_lsof_port_href
           get_myip
           )
     );
@@ -1171,7 +1170,7 @@ sub get_process_pid_hash {
     return \%hash;
 }
 
-sub get_lsof_port_hash {
+sub get_lsof_port_href {
     my %hash;
 
     for ( split /\n/, timed_run( 0, 'lsof', '+c15', '-n', '-P', '-i' ) ) {
@@ -1960,7 +1959,8 @@ sub print_apache_info {
 
     my %apache_ports;
     my %root_httpd;
-    while ( my ( $portnum, $aref ) = each(%$PORT_REF) ) {
+    my $ports = get_lsof_port_href();
+    while ( my ( $portnum, $aref ) = each(%$ports) ) {
         for my $href (@$aref) {
             next unless $href->{USER} eq "root";
             next unless $href->{CMD} eq "httpd";
@@ -2571,7 +2571,8 @@ sub print_lsws_info {
 
     my %lshttpd_ports = ();
 
-    while ( my ( $portnum, $aref ) = each(%$PORT_REF) ) {
+    my $ports = get_lsof_port_href();
+    while ( my ( $portnum, $aref ) = each(%$ports) ) {
         for my $href (@$aref) {
             next if not $href->{USER} eq "root";
             next if not $href->{CMD} eq "litespeed";
@@ -2686,11 +2687,10 @@ sub check_for_license_error {
 }
 
 sub check_port_hash {
-    return if ( scalar keys(%$PORT_REF) >= 1 );
+    my $ports = get_lsof_port_href();
+    return if scalar keys(%$ports);
     print_warn('lsof: ');
-    print_warning('Did not return a list of TCP ports in LISTEN state.');
-    print_warning('  Either lsof is broken or there are zero listening services.');
-    print_warning('  Some port-based checks will be skipped!');
+    print_warning('Did not return a list of TCP ports in LISTEN state. Either lsof is broken or there are zero listening services. Some port-based checks will be skipped!');
 }
 
 sub check_selinux_status {
@@ -7493,16 +7493,16 @@ sub check_updatelog {
 ##############################
 
 sub check_smtp_processes {
-
-    return if scalar keys(%$PORT_REF) == 0;
-    if ( !defined( $PORT_REF->{"25"} ) && !-f '/etc/eximdisable' ) {
+    my $ports = get_lsof_port_href();
+    return unless scalar keys(%$ports);
+    if ( !defined( $ports->{'25'} ) && !-f '/etc/eximdisable' ) {
         print_warn('Exim: ');
         print_warning('not disabled and does not appear to be up -- nothing listening on port 25');
     }
 
-    return if !defined( $PORT_REF->{"25"} );
+    return if !defined( $ports->{'25'} );
 
-    for my $href ( @{ $PORT_REF->{"25"} } ) {
+    for my $href ( @{ $ports->{'25'} } ) {
         my $pid = $href->{PID};
         my $cmd = $PROCESS_REF->{$pid}{CMD};
         if ( $href->{PROTO} eq "TCP" && !( $cmd =~ m{ \A /usr/sbin/exim \b }xms ) ) {
