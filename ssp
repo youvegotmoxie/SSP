@@ -87,7 +87,6 @@ our @APACHE_VERSION_OUTPUT;    # httpd -v
 our $APACHE_VERSION;           # Version string
 our $APACHE_BUILT;             # Build date
 our $APACHE_EA_VERSION;        # EA version which built Apache
-our $APACHE_MODULES;           # Hash of Apache modules
 our ( $LSWS_FULL_VERSION, $LSWS_NUMERIC_VERSION );
 our ( $EA3_PHPVERSION, $EA3_PHP5VERSION, $EA3_PHP4VERSION, $EA3_PHP4HANDLER, $EA3_PHP5HANDLER, $EA3_SUEXEC );
 our @LSOF_80;
@@ -134,12 +133,11 @@ sub init {
     if ($IS_CPANEL) {
         $CPANEL_VERSION  = get_cpanel_version();
         $EA4             = is_ea4();
-        $HTTPD_BIN       = find_httpd_bin();            # location of operative httpd
+        $HTTPD_BIN       = find_httpd_bin();          # location of operative httpd
         @PHPINI          = get_phpini();
         $PURE_FTPD_CONF  = get_pureftpd_conf();
         $PRO_FTPD_CONF   = get_proftpd_conf();
         $EXIM_LOCAL_OPTS = get_exim_localopts();
-        $APACHE_MODULES  = get_apache_modules_hash();
         ( $OLD_BACKUP_CONF,   $NEW_BACKUP_CONF )      = get_backup_config();
         ( $LSWS_FULL_VERSION, $LSWS_NUMERIC_VERSION ) = get_lsws_version();
         $CPUPDATE_CONF = get_cpupdate_conf();
@@ -212,6 +210,7 @@ sub init {
     # There is some memoize overhead, but it should be a safe bet for anything with unpredictable runtimes (network, heavy disk I/O, external processes).
     do_memoize(
         qw (
+          get_apache_modules_href
           get_cpanel_license_file_info_href
           get_installed_ea4_php_href
           get_myip
@@ -329,7 +328,6 @@ sub long_check_list {
     check_for_lsws_update();
     print_ea3_php_configuration();
     print_ea4_php_configuration();
-    print_if_mod_userdir();
     check_for_clustering();
     check_sysinfo();
     check_for_remote_mysql();
@@ -366,7 +364,7 @@ sub long_check_list {
     check_for_tomcatoptions();
     check_for_sneaky_htaccess();
     check_ea4_paths_conf();
-    check_apache_missing_modules();
+    check_apache_modules();
     check_perl_sanity();
     check_for_non_default_permissions();
     check_for_non_default_file_capabilities();
@@ -467,15 +465,10 @@ sub long_check_list {
     check_for_processes_killed_by_prm();
     check_for_broken_userdatadomains();
     check_ssl_db_perms();
-    check_for_nat_plus_mod_evasive();
     check_for_stray_index_php();
     check_for_port_80_not_apache();
     check_for_missing_groups();
     check_for_noquotafs();
-    check_for_mod_rpaf();
-    check_for_mod_spdy();
-    check_for_mod_http2();
-    check_for_mod_fcgid();
     check_for_roundcube_overlay();
     check_for_hostname_park_zoneexists();
     check_for_pgpass_colon_in_password_field();
@@ -483,8 +476,6 @@ sub long_check_list {
     check_for_extra_uid_0_user();
     check_for_easyparams_attributes();
     check_for_allow_update_in_named_conf();
-    check_for_mpm_itk();
-    check_for_mod_ruid2();
     check_for_broken_mysqldump();
     check_exim_log_sanity();
     check_updatelog();
@@ -815,7 +806,7 @@ sub find_httpd_bin {
     return;
 }
 
-sub get_apache_modules_hash {
+sub get_apache_modules_href {
     return unless defined $HTTPD_BIN;
     return unless -x $HTTPD_BIN;
     my %modules = map { ( split( /\s+/, $_, 3 ) )[1] => 1 } split /\n/, timed_run( 0, $HTTPD_BIN, '-M' );
@@ -2107,6 +2098,7 @@ sub print_ea4_php_configuration {
     my $info            = 'UNKNOWN';
     my $fpm_jail_toggle = '/var/cpanel/feature_toggles/apachefpmjail';
     my $ea4_php         = get_installed_ea4_php_href();
+    my $modules         = get_apache_modules_href();
     print_info('PHP Default: ');
     if ( defined($ea4_php) && defined( $ea4_php->{default} ) && defined( $ea4_php->{ $ea4_php->{default} }->{release_version} ) && defined( $ea4_php->{ $ea4_php->{default} }->{handler} ) ) {
         $info = '[ EA4 ]';
@@ -2117,7 +2109,7 @@ sub print_ea4_php_configuration {
     if ( -e $fpm_jail_toggle ) {
         print_info('PHP-FPM: ');
         print_normal( $fpm_jail_toggle . ' exists, PHP-FPM will jail PHP scripts for users that have Jailed or Disabled shells.' );
-        if ( defined $APACHE_MODULES and not( defined $APACHE_MODULES->{'ruid2_module'} and defined $CPCONF{'jailapache'} and $CPCONF{'jailapache'} == 1 ) ) {
+        if ( defined $modules and not( defined $modules->{'ruid2_module'} and defined $CPCONF{'jailapache'} and $CPCONF{'jailapache'} == 1 ) ) {
             print_warn('PHP-FPM: ');
             print_warning('Jail is enabled without mod_ruid2 and/or Jail Apache Virtual Hosts tweak setting enabled, these MUST also be enabled for proper functioning unless EA-5524 is resolved.');
         }
@@ -2256,37 +2248,6 @@ sub print_if_using_other_dns {
     for my $found (@found) {
         print_info('DNS Service: ');
         print_normal( $service{$found} );
-    }
-}
-
-sub print_if_mod_userdir {
-    return unless defined $APACHE_MODULES->{'userdir_module'};
-
-    if ($EA4) {
-        my $ea4_php = get_installed_ea4_php_href();
-        if ( cpanel_version_is(qw( >= 11.59.0.0 )) ) {
-            print_info('Mod Userdir: ');
-            print_warning("will not execute PHP scripts via PHP-FPM");
-        }
-        if ( defined($ea4_php) && defined( $ea4_php->{default} ) && defined( $ea4_php->{ $ea4_php->{default} }->{handler} ) && $ea4_php->{ $ea4_php->{default} }->{handler} eq "cgi" ) {
-            print_info('Mod Userdir: ');
-            print_warning("will not execute PHP scripts via cgi handler");
-        }
-    }
-
-    if ( defined $APACHE_MODULES->{'passenger_module'} ) {
-        print_info('Mod Userdir: ');
-        print_warning('doesn\'t work with Mod Passenger');
-    }
-    if ( defined $APACHE_MODULES->{'ruid2_module'} ) {
-        print_info('Mod Userdir: ');
-        print_warning('doesn\'t work with Mod Ruid2');
-        return;
-    }
-    if ( defined $APACHE_MODULES->{'mpm_itk_module'} ) {
-        print_info('Mod userdir: ');
-        print_warning('doesn\'t work with MPM ITK');
-        return;
     }
 }
 
@@ -3213,15 +3174,65 @@ sub check_ea4_paths_conf {
     }
 }
 
-sub check_apache_missing_modules {
-    return unless scalar keys %{$APACHE_MODULES};
-    my %check = (    # 'foo_module' => 'Help text'
-        'headers_module' => ' - May cause proxy subdomains to redirect infinitely, see CPANEL-12707.'
+sub check_apache_modules {
+    my $installed_modules = get_apache_modules_href();
+    return unless scalar keys %{$installed_modules};
+
+    # Example: 'foo_module' => { help => [ 'Some help text.' ], check_missing => 1 }
+    #      or: push @{ $check{'foo_module'}{'help'} }, 'More help text.';
+    # Set check_missing => 1 to report missing instead of installed module
+    my %check = (
+        'evasive20_module' => { help => ['Can result in random 403s. Check /var/log/apache2/mod_evasive/ if relevant.'] },
+        'evasive24_module' => { help => ['Can result in random 403s. Check /var/log/apache2/mod_evasive/ if relevant.'] },
+        'headers_module'   => { help => ['May cause proxy subdomains to redirect infinitely, see CPANEL-12707.'], check_missing => 1 },
+        'hive_module'      => { help => ['Third-party - 1H Hive.  Not supported.'] },
+        'lua_module'       => { help => ['Experimental.  Potential security issues in shared hosting environments.'] },
+        'rpaf_module'      => { help => ['May prevent mod_http2 from working -- see 8772327. May prevent .htaccess from denying access -- see 4422297.'] },
+        'spdy_module'      => { help => ['May break proxy subdomains. See 4973361.'] },
     );
+    my $add = sub {
+        my ( $mod, $text, $check_missing ) = @_;
+        push @{ $check{$mod}{'help'} }, $text;
+        $check{$mod}{'check_missing'} = 1 if $check_missing;
+    };
+
+    $add->( 'http2_module', 'Causes segfaults in Apache 2.4.25, see EAL-3153.' ) if version_compare( $APACHE_VERSION, qw ( == 2.4.25 ) );
+    $add->( 'userdir_module', 'Does not work with passenger_module.' )                                                    if defined $installed_modules->{'passenger_module'};
+    $add->( 'userdir_module', 'Does not work with ruid2_module.' )                                                        if defined $installed_modules->{'ruid2_module'};
+    $add->( 'userdir_module', 'Does not work with mpm_itk_module.' )                                                      if defined $installed_modules->{'mpm_itk_module'};
+    $add->( 'ruid2_module',   'Can cause file permission problems when using LiteSpeed Web Server (see ticket 5154193)' ) if $LSWS_FULL_VERSION;
+    if ($EA4) {
+        $add->( 'fcgid_module',   'Has many caveats, see https://documentation.cpanel.net/display/EA4/Apache+Module%3A+FCGId' );
+        $add->( 'userdir_module', 'Will not execute PHP scripts via PHP-FPM.' );
+        my $ea4_php = get_installed_ea4_php_href();
+        if ( defined($ea4_php) && defined( $ea4_php->{default} ) && defined( $ea4_php->{ $ea4_php->{default} }->{handler} ) && $ea4_php->{ $ea4_php->{default} }->{handler} eq "cgi" ) {
+            $add->( 'userdir_module', 'Will not execute PHP scripts via CGI handler.' );
+        }
+    }
+    if ( defined $installed_modules->{'security_module'} or defined $installed_modules->{'security2_module'} ) {
+        $add->( 'mpm_itk_module', 'Incompatible with ModSecurity SecDataDir (collections) until EA-4093 is resolved.' );
+        $add->( 'ruid2_module',   'Incompatible with ModSecurity SecDataDir (collections) until EA-4093 is resolved.' );
+    }
+    if ( defined $CPCONF{'jailapache'} && $CPCONF{'jailapache'} == 1 ) {
+        $add->( 'ruid2_module', 'Enabled with Jail Apache Virtual Hosts tweak. This can break some Mailman URLs. See FB-84393, FB-104017, and tickets 5015613, 5227891.' );
+        if ( $EA3_PHP5HANDLER && $EA3_PHP5HANDLER eq 'suphp' ) {
+            $add->( 'ruid2_module', 'Enabled with Jail Apache Virtual Hosts tweak and suPHP handler, these are NOT COMPATIBLE, see FB-70561, FB-105901.' );
+        }
+    }
+    if ($IS_CLOUDLINUX) {
+        $add->( 'mpm_itk_module', 'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
+        $add->( 'ruid2_module',   'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
+    }
+
     for my $module ( sort keys %check ) {
-        unless ( defined $APACHE_MODULES->{$module} ) {
+        my $help_text = join( "\n" . ' ' x ( length($module) + 23 ) . '\_ - ', @{ $check{$module}{'help'} } );
+        if ( defined $check{$module}{'check_missing'} and not defined $installed_modules->{$module} ) {
             print_warn('Apache: ');
-            print_warning( 'Missing ' . $module . $check{$module} );
+            print_warning( 'Missing ' . $module . ' - ' . $help_text );
+        }
+        if ( not defined $check{$module}{'check_missing'} and defined $installed_modules->{$module} ) {
+            print_warn('Apache: ');
+            print_warning( ' Loaded ' . $module . ' - ' . $help_text );
         }
     }
 }
@@ -4910,7 +4921,8 @@ sub check_for_usr_local_lib_libz_so {
 }
 
 sub check_for_non_default_modsec_rules {
-    return unless defined( $APACHE_MODULES->{'security_module'} || $APACHE_MODULES->{'security2_module'} );
+    my $modules = get_apache_modules_href();
+    return unless defined $modules->{'security_module'} or defined $modules->{'security2_module'};
 
     my $modsec2_conf      = '/usr/local/apache/conf/modsec2.conf';
     my $modsec2_user_conf = '/usr/local/apache/conf/modsec2.user.conf';
@@ -5465,8 +5477,7 @@ sub check_for_broken_rpm {
     );
 
     if ($EA4) {
-        $rpms{'ea-apache24-mod_lua'} = { check => ['exists'], help => 'Experimental. Potential security issues in shared hosting environments.' };
-        $rpms{'httpd-tools'}         = { check => ['exists'], help => 'Conflicts with ea-apache24-tools, will break EA4.' };
+        $rpms{'httpd-tools'} = { check => ['exists'], help => 'Conflicts with ea-apache24-tools, will break EA4.' };
     }
     else {
         $rpms{'cpp'} = { check => ['verify-fail'], help => 'Missing or modified files, may cause EasyApache to fail, verify with "rpm -V cpp"' };
@@ -6267,11 +6278,12 @@ sub check_for_usr_local_include_jpeglib_h {
 }
 
 sub check_for_bw_module_and_more_than_1024_vhosts {
+    my $modules = get_apache_modules_href();
+    return unless defined $modules->{'bw_module'};
 
     # Remove on EA3 deprecation
     my $httpdconf = $EA4 ? '/etc/apache2/conf/httpd.conf' : '/usr/local/apache/conf/httpd.conf';
     return if !-f $httpdconf;
-    return unless defined $APACHE_MODULES->{'bw_module'};
 
     my $num_vhosts = 0;
 
@@ -6285,7 +6297,7 @@ sub check_for_bw_module_and_more_than_1024_vhosts {
 
     if ( $num_vhosts and $num_vhosts > 1024 ) {
         print_warn('bw_module: ');
-        print_warning("loaded, and httpd.conf has >1024 VirtualHosts ($num_vhosts). Apache failing to start? See FB-69121");
+        print_warning("loaded, and httpd.conf has >1024 VirtualHosts ($num_vhosts). Apache failing to start? See EAL-2347");
     }
 }
 
@@ -6754,17 +6766,6 @@ sub check_ssl_db_perms {
     }
 }
 
-sub check_for_nat_plus_mod_evasive {
-    my $cpnat = '/var/cpanel/cpnat';
-    return if !-e $cpnat;
-    return if ( stat($cpnat) )[7] == 0;
-
-    if ( defined $APACHE_MODULES->{'evasive20_module'} || defined $APACHE_MODULES->{'evasive24_module'} ) {
-        print_warn('mod_evasive: ');
-        print_warning('this 3rd party Apache module is loaded, and the server is using NAT. May cause random 403s. See ticket 4416847');
-    }
-}
-
 sub check_for_stray_index_php {
     my $indexphp = '/usr/local/cpanel/base/index.php';
     if ( -e $indexphp ) {
@@ -6856,32 +6857,6 @@ sub check_for_noquotafs {
 
     print_warn("$noquotafs: ");
     print_warning('exists. quota issues? See https://documentation.cpanel.net/display/ALD/The+Quota+File+Systems+Configuration+File');
-}
-
-sub check_for_mod_rpaf {
-    return unless defined $APACHE_MODULES->{'rpaf_module'};
-    print_warn('mod_rpaf: ');
-    print_warning('loaded. May prevent mod_http2 from working -- see 8772327. May prevent .htaccess from denying access -- see 4422297');
-}
-
-sub check_for_mod_spdy {
-    return unless defined $APACHE_MODULES->{'spdy_module'};
-    print_warn('mod_spdy: ');
-    print_warning('loaded. May break proxy subdomains. See 4973361');
-}
-
-sub check_for_mod_http2 {
-    if ( version_compare( $APACHE_VERSION, qw ( == 2.4.25 ) ) && defined $APACHE_MODULES->{'http2_module'} ) {
-        print_warn('mod_http2: ');
-        print_warning('is loaded and causes segfaults in Apache 2.4.25, see EAL-3153.');
-    }
-}
-
-sub check_for_mod_fcgid {
-    return unless $EA4;
-    return unless defined $APACHE_MODULES->{'fcgid_module'};
-    print_warn('mod_fcgid: ');
-    print_warning('loaded, and has many caveats.  See https://documentation.cpanel.net/display/EA4/Apache+Module%3A+FCGId');
 }
 
 sub check_for_roundcube_overlay {
@@ -6990,34 +6965,6 @@ sub check_for_allow_update_in_named_conf {
             }
         }
         close $fh;
-    }
-}
-
-sub check_for_mpm_itk {
-    return unless defined $APACHE_MODULES->{'mpm_itk_module'};
-    if ( defined $APACHE_MODULES->{'security_module'} || defined $APACHE_MODULES->{'security2_module'} ) {
-        print_warn('MPM ITK: ');
-        print_warning('is incompatible with ModSecurity SecDataDir (collections) until EA-4093 is resolved.');
-    }
-}
-
-sub check_for_mod_ruid2 {
-    return unless defined $APACHE_MODULES->{'ruid2_module'};
-    if ( defined $CPCONF{'jailapache'} && $CPCONF{'jailapache'} == 1 ) {
-        print_warn('Mod Ruid2: ');
-        print_warning('is enabled with Jail Apache Virtual Hosts tweak, this might break Mailman, see FB-84393, FB-104017, and tickets 5015613, 5227891');
-        if ( $EA3_PHP5HANDLER && $EA3_PHP5HANDLER eq 'suphp' ) {
-            print_warn('Mod Ruid2: ');
-            print_warning('is enabled with Jail Apache Virtual Hosts tweak and suPHP handler, these are NOT COMPATIBLE, see FB-70561, FB-105901');
-        }
-    }
-    if ($LSWS_FULL_VERSION) {
-        print_warn('Mod Ruid2: ');
-        print_warning('could cause file permission problems when using LiteSpeed Web Server (see ticket 5154193)');
-    }
-    if ( defined $APACHE_MODULES->{'security_module'} || defined $APACHE_MODULES->{'security2_module'} ) {
-        print_warn('Mod Ruid2: ');
-        print_warning('is incompatible with ModSecurity SecDataDir (collections) until EA-4093 is resolved.');
     }
 }
 
@@ -7275,14 +7222,6 @@ sub check_for_cl_unsupported_memory_limits {
         print_warn('PHP DSO: ');
         print_warning('in use on CL 5 or earlier. CloudLinux memory limits not imposed on Apache processes.');
     }
-    if ( defined $APACHE_MODULES->{'ruid2_module'} ) {
-        print_warn('Mod Ruid2: ');
-        print_warning('in use. CloudLinux memory limits not imposed on Apache processes.');
-    }
-    if ( defined $APACHE_MODULES->{'mpm_itk_module'} ) {
-        print_warn('MPM ITK: ');
-        print_warning('in use. CloudLinux memory limits not imposed on Apache processes.');
-    }
 }
 
 sub check_for_eblockers {
@@ -7307,17 +7246,6 @@ sub check_for_frontpage_rpms {
 
 sub check_for_php_selector_incompatibilities {
     return unless $IS_CLOUDLINUX;
-
-    if ( defined $APACHE_MODULES->{'mpm_itk_module'} ) {
-        print_warn('MPM ITK: ');
-        print_warning('is enabled but not compatible with PHP Selector - http://docs.cloudlinux.com/index.html?php_selector.html');
-    }
-
-    if ( defined $APACHE_MODULES->{'ruid2_module'} ) {
-        print_warn('Mod Ruid2: ');
-        print_warning('is enabled but not compatible with PHP Selector - http://docs.cloudlinux.com/index.html?php_selector.html');
-    }
-
     if ( $EA3_PHP5HANDLER && $EA3_PHP5HANDLER eq 'dso' ) {
         print_warn('DSO PHP handler: ');
         print_warning('is enabled but not compatible with PHP Selector - http://docs.cloudlinux.com/index.html?php_selector.html');
@@ -7669,7 +7597,6 @@ sub check_for_les {
 sub check_for_1h {
     return unless -d '/usr/local/1h';
     my $guardian = 'not running';
-    my $hive_module = scalar keys %{$APACHE_MODULES} ? ( defined $APACHE_MODULES->{'hive_module'} ? 'loaded' : 'not active' ) : 'unknown';
 
     if ( -x '/usr/local/1h/sbin/guardian' ) {
         for my $line (@PROCESS_LIST) {
@@ -7681,7 +7608,7 @@ sub check_for_1h {
     }
 
     print_3rdp('1H Software: ');
-    print_3rdp2("/usr/local/1h exists. hive apache module: [ $hive_module ] Guardian process: [ $guardian ]");
+    print_3rdp2("/usr/local/1h exists. Guardian process: [ $guardian ]");
 }
 
 sub check_for_webmin {
