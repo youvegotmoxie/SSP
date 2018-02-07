@@ -5763,6 +5763,8 @@ sub check_if_httpdconf_ipaddrs_exist {
 
 sub check_distcache_and_libapr {
     return if $EA4;
+    return unless defined $HTTPD_BIN;
+    return unless -x $HTTPD_BIN;
     my $last_success_profile           = '/var/cpanel/easy/apache/profile/_last_success.yaml';
     my $has_distcache                  = 0;
     my $httpd_not_linked_to_system_apr = 0;
