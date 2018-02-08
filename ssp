@@ -89,7 +89,6 @@ our $APACHE_EA_VERSION;        # EA version which built Apache
 our ( $LSWS_FULL_VERSION, $LSWS_NUMERIC_VERSION );
 our ( $EA3_PHPVERSION, $EA3_PHP5VERSION, $EA3_PHP4VERSION, $EA3_PHP4HANDLER, $EA3_PHP5HANDLER, $EA3_SUEXEC );
 our @LSOF_80;
-our $OPENSSL_RPM_CHANGELOG;
 our $ORIGINAL_PATH;
 our %SOCKET;                   # Dispatcher for optional Socket module usage
 
@@ -213,6 +212,7 @@ sub init {
           get_installed_ea4_php_href
           get_lsof_port_href
           get_myip
+          get_openssl_rpm_changelog_sref
           )
     );
     return 1;
@@ -282,11 +282,8 @@ sub run {
     # These are run closer to the end since it has the potential to take the longest due to RPM usage
     @EXTENDED_RPM_LIST = build_rpm_list( async_job_result('print_rpm_list') );
     @RPM_LIST          = build_simple_rpm_list( \@EXTENDED_RPM_LIST );
-    build_openssl_rpm_changelog();
 
     # These require @RPM_LIST
-    check_for_openssl_heartbleed_bug();
-    check_for_openssl_secadv_20140605();
     populate_mysql_rpm_versions_array();
     check_for_mysql_4();
     check_for_additional_rpms();
@@ -512,6 +509,8 @@ sub long_check_list {
     check_for_bash_secadv_20140924();    # advisory
     check_for_exim_cve_2016_1531();      # advisory
     all_malware_checks();
+    check_for_openssl_heartbleed_bug();
+    check_for_openssl_secadv_20140605();
 
     return 0;
 }
@@ -603,7 +602,6 @@ sub non_cpanel_checks_only {
     # These are run closer to the end since it has the potential to take the longest due to RPM usage
     @EXTENDED_RPM_LIST = build_rpm_list( get_rpm_list() );
     @RPM_LIST          = build_simple_rpm_list( \@EXTENDED_RPM_LIST );
-    build_openssl_rpm_changelog();
 
     # These require @RPM_LIST
     populate_mysql_rpm_versions_array();
@@ -716,13 +714,6 @@ sub dnsonly_checks_only {
     ## [CRIT]
     check_for_bash_secadv_20140924();    # advisory
     all_malware_checks();
-
-    # These are run closer to the end since it has the potential to take the longest due to RPM usage
-    @EXTENDED_RPM_LIST = build_rpm_list( get_rpm_list() );
-    @RPM_LIST          = build_simple_rpm_list( \@EXTENDED_RPM_LIST );
-    build_openssl_rpm_changelog();
-
-    # These require @RPM_LIST
     check_for_openssl_heartbleed_bug();
     check_for_openssl_secadv_20140605();
 
@@ -738,11 +729,6 @@ sub csi_checks_only {
     check_port_hash();
     check_for_bash_secadv_20140924();    # advisory
     all_malware_checks();
-
-    # These are run closer to the end since it has the potential to take the longest due to RPM usage
-    build_openssl_rpm_changelog();
-
-    # These require build_rpm_list() to have been run, so that @RPM_LIST is populated
     check_for_openssl_heartbleed_bug();
     check_for_openssl_secadv_20140605();
     print_info2('SSP checks done.');
@@ -6996,22 +6982,11 @@ sub check_for_cron_allow {
 }
 
 sub check_for_openssl_heartbleed_bug {
-    return if !$OPENSSL_RPM_CHANGELOG;
-    return if $OPENSSL_RPM_CHANGELOG =~ m{ \sCVE-2014-0160\s }xms;
-
-    my $sysinfo_config = '/var/cpanel/sysinfo.config';
-    return if !-f $sysinfo_config;
-
-    open my $fh, '<', $sysinfo_config or return;
-    while (<$fh>) {
-        if (/^rpm_dist_ver=(\d+)$/) {
-            my $rpm_dist_ver = $1;
-            return if !$rpm_dist_ver;
-            return if ( $rpm_dist_ver <= 5 );    # RHEL/CentOS 5 not vuln: http://cpanel.net/heartbleed-vulnerability-information/
-            last;
-        }
-    }
-    close $fh or return;
+    return if version_compare( $OS_VERSION, qw( >= 6.6 ) );
+    return if version_compare( $OS_VERSION, qw( <= 5 ) );
+    my $changelog_ref = get_openssl_rpm_changelog_sref();
+    return unless $$changelog_ref;
+    return if grep { / CVE-2014-0160 / } $$changelog_ref;
 
     chomp( my $openssl_ver = timed_run( 0, 'openssl', 'version' ) );
     return if !$openssl_ver;
@@ -7034,22 +7009,10 @@ sub check_for_openssl_heartbleed_bug {
 }
 
 sub check_for_openssl_secadv_20140605 {
-    return if !$OPENSSL_RPM_CHANGELOG;
-    return if ( $OPENSSL_RPM_CHANGELOG =~ m{ \sCVE-2014-0224\s }xms );
-
-    my $sysinfo_config = '/var/cpanel/sysinfo.config';
-    return if !-f $sysinfo_config;
-
-    open my $fh, '<', $sysinfo_config or return;
-    while (<$fh>) {
-        if (/^rpm_dist_ver=(\d+)$/) {
-            my $rpm_dist_ver = $1;
-            return if !$rpm_dist_ver;
-            return if ( $rpm_dist_ver < 5 || $rpm_dist_ver > 6 );    # Only RHEL/CentOS 5 and 6 need apply
-            last;
-        }
-    }
-    close $fh or return;
+    return unless version_compare( $OS_VERSION, qw( <= 6 ) );    # Only RHEL/CentOS 5 and 6 need apply
+    my $changelog_ref = get_openssl_rpm_changelog_sref();
+    return unless $$changelog_ref;
+    return if grep { / CVE-2014-0224 / } $$changelog_ref;
 
     chomp( my $openssl_ver = timed_run( 0, 'openssl', 'version' ) );
     return if !$openssl_ver;
@@ -8287,14 +8250,9 @@ sub print_rpm_list {
     return 0;
 }
 
-sub build_openssl_rpm_changelog {
-    return if $OPENSSL_RPM_CHANGELOG;    # don't do it again if it's already done
-
-    my $timeout = $OPT_TIMEOUT ? $OPT_TIMEOUT : 15;
-
-    print_info2("RPM query OpenSSL changelog (running \"rpm -q ...\"). This will timeout after $timeout seconds.");
-
-    $OPENSSL_RPM_CHANGELOG = timed_run( $timeout, qw( rpm -q --changelog openssl ) );
+sub get_openssl_rpm_changelog_sref {
+    my $changelog = timed_run( 0, qw( rpm -q --changelog openssl ) );
+    return \$changelog;
 }
 
 sub check_for_cloudlinux_mysql_gov {
