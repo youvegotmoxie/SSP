@@ -5271,7 +5271,7 @@ sub check_for_extra_mysql_config_files {
     return if !@found_locations;
     print_warn('MySQL - extra my.cnf files found: ');
     print_warning( '[ ' . join( " ", @found_locations ) . ' ]' );
-    print_warning( "\t " . "\_ These may replace or be merged with $MYSQL_CONF_FILE settings!" );
+    print_warning("              \\_ These may replace or be merged with $MYSQL_CONF_FILE settings!");
 }
 
 sub check_cpanel_config {
