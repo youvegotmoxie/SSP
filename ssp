@@ -61,8 +61,6 @@ our $IS_CPANEL;
 our $IS_KERNELCARE;
 our ( $OS_RELEASE, $OS_TYPE, $OS_VERSION, $OS_ISES, $IS_AMAZON, $IS_CLOUDLINUX );
 our @LOCAL_IPADDRS_LIST;
-our @PROCESS_LIST;
-our $PROCESS_REF;       # Hash of processes running on system along with details
 our $IPCS_REF;
 our $HOSTINFO;
 our $CPUINFO;
@@ -111,8 +109,6 @@ sub init {
     ## use critic
     $Term::ANSIColor::AUTORESET = 1;
     @LOCAL_IPADDRS_LIST         = get_local_ipaddrs();
-    @PROCESS_LIST               = get_process_list();
-    $PROCESS_REF                = get_process_pid_hash();
     $IPCS_REF                   = get_ipcs_hash();
     $HOSTINFO                   = get_hostinfo();
     $CPUINFO                    = get_cpuinfo();
@@ -213,6 +209,7 @@ sub init {
           get_lsof_port_href
           get_myip
           get_openssl_rpm_changelog_sref
+          get_process_pid_href
           )
     );
     return 1;
@@ -1128,32 +1125,51 @@ sub get_tiers_file {    #TODO: Get rid of this in favor of get_tiers_json_href i
     return _http_get( Host => 'httpupdate.cpanel.net', Path => '/cpanelsync/TIERS' );
 }
 
-sub get_process_list {    # Usage of this needs to be deprecated in favor of the %process hash
-    return split /\n/, timed_run( 0, 'ps', 'axwwwf', '-o', 'user,pid,cmd' );
+sub get_process_pid_href {
+
+    # Tested on CentOS 5 through 7.
+    # 'ps' is horrible at providing reliably-parseable output.  This is probably as close as we can get.
+    # etimes field doesn't exist until CentOS 7 but can be derived from etime.
+    my $field_separator = '#^#';                                                # Any sequence unlikely to occur in normal ps output.  ps will also pad everything with spaces.
+    my $ps_format_opt   = join( $field_separator, qw( %p %P %U %t %c %a ) );    # like 'pid#^#ppid#^#user#^#etime#^#comm#^#args'
+    my %hash            = map {
+        my ( $pid, $ppid, $user, $etime, $comm, $args ) = split /\s*\Q$field_separator\E\s*/, $_;
+        $pid =~ s/^\s+//;
+        $args =~ s/\s+$//;
+        my ( $sec, $min, $hou, $day ) = reverse split( /[:-]/, $etime );
+        $day += 0;
+        $hou += 0;
+        $min += 0;
+        $sec += $day * 86400 + $hou * 3600 + $min * 60;
+        $pid => {
+            'PPID'  => defined $ppid  ? $ppid  : '',
+            'USER'  => defined $user  ? $user  : '',
+            'ETIME' => defined $etime ? $etime : '',
+            'COMM'  => defined $comm  ? $comm  : '',
+            'ARGS'  => defined $args  ? $args  : '',
+            'ETIMES' => $sec,
+          }
+    } split /\n/, timed_run( 0, 'ps', '--no-headers', '--width=1000', '-eo', $ps_format_opt );
+    return \%hash;
 }
 
-sub get_process_pid_hash {
-    my %hash;
-    for ( split /\n/, timed_run( 0, 'ps', 'axwww', '-o', 'user,pid,ppid,etime,comm,cmd' ) ) {
+sub grep_process_cmd {
 
-        # 'etimes' format doesn't exist before CentOS 7, so we must suffer with 'etime' [[DD-]hh:]mm:ss and convert
-        # nobody     4452    967    1-05:15:26 httpd           /usr/sbin/httpd -k start
-        # nobody     4453    967    05:40:38 httpd           /usr/sbin/httpd -k start
-        # root      17159   1260       00:37 auth            dovecot/auth -w
-        if (m{ ^ ([^\s]+) \s+ (\d+) \s+ (\d+) \s+ ([0-9:-]+) \s+ (.*?) \s+ (.*?) \s* $ }xms) {
-            $hash{$2}{USER} = $1;
-            $hash{$2}{PPID} = $3;
-            $hash{$2}{COMM} = $5;
-            $hash{$2}{CMD}  = $6;
-            my ( $seconds, $minutes, $hours, $days ) = reverse split( /[:-]/, $4 );
-            $minutes += 0;
-            $hours   += 0;
-            $days    += 0;
-            $hash{$2}{ETIMES} = ( ( ( ( ( $days * 24 ) + $hours ) * 60 ) + $minutes ) * 60 ) + $seconds;
-        }
+    # Matches short (COMM) or long (ARGS) command columns
+    my ( $pattern, $user ) = @_;
+    my $procs = get_process_pid_href();
+    my %result;
+    for my $pid ( keys %{$procs} ) {
+        next if defined $user ? $procs->{$pid}->{'USER'} ne $user : 0;
+        $result{$pid} = $procs->{$pid} if grep { /$pattern/ } @{ $procs->{$pid} }{ 'COMM', 'ARGS' };
     }
+    return %result;
+}
 
-    return \%hash;
+sub exists_process_cmd {
+    my ( $pattern, $user ) = @_;
+    my %procs = grep_process_cmd( $pattern, $user );
+    return scalar keys %procs ? 1 : 0;
 }
 
 sub get_lsof_port_href {
@@ -1946,13 +1962,14 @@ sub print_apache_info {
     my %apache_ports;
     my %root_httpd;
     my $ports = get_lsof_port_href();
+    my $procs = get_process_pid_href();
     while ( my ( $portnum, $aref ) = each(%$ports) ) {
         for my $href (@$aref) {
             next unless $href->{USER} eq "root";
             next unless $href->{CMD} eq "httpd";
             my $pid = $href->{PID};
-            if ( defined $PROCESS_REF->{$pid} and $PROCESS_REF->{$pid}{ETIMES} > 60 ) {
-                next if $PROCESS_REF->{$pid}{CMD} =~ m{ \A /apache/bin/httpd }xms;    # Ignore these - see TECH-334
+            if ( defined $procs->{$pid} and $procs->{$pid}->{ETIMES} > 60 ) {
+                next if $procs->{$pid}->{ARGS} =~ m{ \A /apache/bin/httpd }xms;    # Ignore these - see TECH-334
                 $root_httpd{$pid} = 1;
             }
             $apache_ports{$portnum} = 1;
@@ -2740,16 +2757,7 @@ sub check_for_missing_usr_bin_crontab {
 }
 
 sub check_if_upcp_is_running {
-    my $upcp_running = 0;
-
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A root (?:.*) cPanel \s Update \s \(upcp\) }xms ) {
-            $upcp_running = 1;
-            last;
-        }
-    }
-
-    if ( $upcp_running == 1 ) {
+    if ( exists_process_cmd( qr{ cPanel \s Update \s \(upcp\) }xms, 'root' ) ) {
         print_warn('upcp check: ');
         print_warning('upcp is currently running');
     }
@@ -3974,13 +3982,9 @@ sub check_pkgacct_override {
 }
 
 sub check_for_gdm {
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A root (?:.*) gdm }xms ) {
-            print_warn('gdm Process: ');
-            print_warning('is running');
-            return;
-        }
-    }
+    return unless exists_process_cmd( qr{ gdm }xms, 'root' );
+    print_warn('gdm Process: ');
+    print_warning('is running');
 }
 
 sub check_for_redhat_firewall {
@@ -3992,31 +3996,24 @@ sub check_for_redhat_firewall {
 
 sub check_easyapache {
     my $ea_is_running_file       = '/usr/local/apache/AN_EASYAPACHE_BUILD_IS_CURRENTLY_RUNNING';
-    my $ea_in_process_list       = 0;
     my $apache_update_no_restart = '/var/cpanel/mgmt_queue/apache_update_no_restart';
     my $ea_is_running            = 0;
 
     if ( -e $ea_is_running_file ) {
-        for my $process (@PROCESS_LIST) {
-            if ( $process =~ m{ \A root (?:.*) easyapache }xms ) {
-                $ea_in_process_list = 1;
-                last;
-            }
-        }
-        if ( !$ea_in_process_list ) {
-            print_warn('EA3: ');
-            print_warning("$ea_is_running_file exists, but 'easyapache' not found in process list");
-        }
-        else {
+        if ( exists_process_cmd( qr{ easyapache }xms, 'root' ) ) {
             $ea_is_running = 1;
             print_warn('EA3: ');
             print_warning('is running');
         }
+        else {
+            print_warn('EA3: ');
+            print_warning("$ea_is_running_file exists, but 'easyapache' not found in process list");
+        }
     }
 
-    if ( -e $apache_update_no_restart and $ea_is_running ) {
-        print_warn('EA3: ');
-        print_warning("$apache_update_no_restart exists! This will prevent EA from completing successfully.");
+    if ( -e $apache_update_no_restart and not $ea_is_running ) {    # The touchfile can exist outside of legitimate EA3 usage, move to generic touchfile check after EA3 is gone.
+        print_warn('Apache: ');
+        print_warning("$apache_update_no_restart exists and EA3 does not appear to be running! This will prevent Apache restarts in some situations.");
     }
 }
 
@@ -5079,6 +5076,7 @@ sub _resolve {
             '3' => 'NO_RECOVERY',
             '4' => 'NO_DATA'
         );
+        local $?;
         if ( $addr =~ /^\d+\.\d+\.\d+\.\d+$/ ) {
             my $packed = inet_aton($addr);
             return unless defined $packed;
@@ -5997,33 +5995,16 @@ sub check_for_homeloader_php_extension {
 }
 
 sub check_for_networkmanager {
-    my $networkmanager_running = 0;
-    my $using_ipaliases        = 0;
-    my $ipaliases              = '/etc/ips';
-
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A root (?:.*) NetworkManager }xms ) {
-            $networkmanager_running = 1;
-            last;
-        }
-    }
-    if ( my $size_ipaliases = ( stat($ipaliases) )[7] ) {
-        $using_ipaliases = 1 if $size_ipaliases >= 7;    # Minimum possible size
-    }
-    if ( $networkmanager_running && $using_ipaliases ) {
-        print_warn('NetworkManager: ');
-        print_warning('is running, could disrupt ipaliases service - see "How to Disable Network Manager" documentation');
-    }
+    return unless -s '/etc/ips';
+    return unless exists_process_cmd( qr{ NetworkManager }xms, 'root' );
+    print_warn('NetworkManager: ');
+    print_warning('is running, could disrupt ipaliases service - see "How to Disable Network Manager" documentation');
 }
 
 sub check_for_dhclient {
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A root (?:.*) dhclient }xms ) {
-            print_warn('dhclient: ');
-            print_warning('found in the process list');
-            last;
-        }
-    }
+    return unless exists_process_cmd( qr{ dhclient }xms, 'root' );
+    print_warn('dhclient: ');
+    print_warning('found in the process list');
 }
 
 sub check_for_var_cpanel_roundcube_install {
@@ -6917,12 +6898,7 @@ sub check_for_extra_uid_0_user {
             $info .= ' [' . $user . ']';
         }
         $info .= ' (limit of 5, there may be more!)' if scalar @uid_0_users >= 5;
-        for my $pid ( keys(%$PROCESS_REF) ) {
-            if ( $PROCESS_REF->{$pid}->{CMD} =~ m{bin/nscd(\s|$)} ) {
-                $info .= ' -- and nscd is running! This can break things. See CPANEL-2360.';
-                last;
-            }
-        }
+        $info .= ' -- and nscd is running! This can break things. See CPANEL-2360.' if exists_process_cmd(qr{bin/nscd (?:\s|$)}xms);    # Don't specify root user here, it may not match.
         print_warning($info);
     }
 }
@@ -7056,25 +7032,16 @@ sub check_for_bash_secadv_20140924 {
 sub check_for_broken_mysqldump {
     my $md = '/usr/bin/mysqldump';
 
-    if ( !-f $md ) {
+    if ( !-x $md ) {
         print_warn("$md: ");
-        print_warning('not found!');
+        print_warning('not found or not executable!');
         return;
     }
 
-    my $pid = IPC::Open3::open3( '</dev/null', '>/dev/null', my $stderr, $md, );
-    waitpid( $pid, 0 );
+    local $?;
+    timed_run( 0, $md );
     my $exit_status = $? >> 8;
-
-    # when running mysqldump with no args, the exit status is 1. anything other than 1 should indicate unexpected behavior.
-    #
-    # $ mysqldump
-    # [...]
-    # $ echo $?
-    # 1
-    #
-    # tested via MySQL55-client
-    if ( $exit_status && $exit_status != 1 ) {
+    if ( $exit_status != 1 ) {    # Running with no options is error 1
         print_warn("$md: ");
         print_warning('may be broken (exit status != 1).');
     }
@@ -7244,6 +7211,7 @@ sub check_cloudlinux_sanity {
     if ( -x '/usr/sbin/cagefsctl' ) {
         my $cagefsctl_help = timed_run_trap_stderr( 0, '/usr/sbin/cagefsctl', '--help' );
         if ( defined $cagefsctl_help and $cagefsctl_help =~ m{ --sanity-check }xms ) {
+            local $?;
             my $cagefsctl_sanity_check = timed_run( 0, '/usr/sbin/cagefsctl', '--sanity-check' );
             my $cagefsctl_sanity_check_status = $? >> 8;
             if ($cagefsctl_sanity_check_status) {
@@ -7465,9 +7433,11 @@ sub check_smtp_processes {
 
     return if !defined( $ports->{'25'} );
 
+    my $procs = get_process_pid_href();
     for my $href ( @{ $ports->{'25'} } ) {
         my $pid = $href->{PID};
-        my $cmd = $PROCESS_REF->{$pid}{CMD};
+        next unless defined $procs->{$pid};
+        my $cmd = $procs->{$pid}->{ARGS};
         if ( $href->{PROTO} eq "TCP" && !( $cmd =~ m{ \A /usr/sbin/exim \b }xms ) ) {
             print_3rdp('SMTP: ');
             print_3rdp2( 'a process other than exim is listening on port 25 [' . $href->{IPV} . ' ' . $href->{IP} . '] [USER: ' . $href->{USER} . '] [CMD: ' . $cmd . '] [PID: ' . $pid . ']' );
@@ -7498,23 +7468,15 @@ sub check_for_varnish {
 }
 
 sub check_for_nginx {
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A (root|nobody) (?:.*) nginx(:?) }xms ) {
-            print_3rdp('nginx: ');
-            print_3rdp2('is running');
-            last;
-        }
-    }
+    return unless exists_process_cmd( qr{ nginx }xms, 'root' );
+    print_3rdp('nginx: ');
+    print_3rdp2('is running');
 }
 
 sub check_for_mailscanner {
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A mailnull (?:.*) MailScanner }xms ) {
-            print_3rdp('MailScanner: ');
-            print_3rdp2('is running');
-            last;
-        }
-    }
+    return unless exists_process_cmd( qr{ MailScanner }xms, 'mailnull' );
+    print_3rdp('MailScanner: ');
+    print_3rdp2('is running');
 }
 
 sub check_for_apf {
@@ -7528,19 +7490,10 @@ sub check_for_apf {
 }
 
 sub check_for_csf {
-    my $lfd = 0;
-    my $csf = timed_run( 0, 'whereis', 'csf' );
-
-    return unless ( $csf =~ /\// );
+    return unless -d '/etc/csf';
     print_3rdp('CSF: ');
-
-    for my $line (@PROCESS_LIST) {
-        if ( $line =~ m{ \A root (?:.*) lfd }xms ) {
-            print_3rdp2('installed, LFD is running');
-            return;
-        }
-    }
-    print_3rdp2('installed, LFD is not running');
+    my $lfd = exists_process_cmd( qr{ lfd }xms, 'root' ) ? 'is' : 'is not';
+    print_3rdp2( 'installed, LFD ' . $lfd . ' running' );
 }
 
 sub check_for_prm {
@@ -7559,17 +7512,7 @@ sub check_for_les {
 
 sub check_for_1h {
     return unless -d '/usr/local/1h';
-    my $guardian = 'not running';
-
-    if ( -x '/usr/local/1h/sbin/guardian' ) {
-        for my $line (@PROCESS_LIST) {
-            if ( $line =~ /Guardian/ ) {
-                $guardian = 'running';
-                last;
-            }
-        }
-    }
-
+    my $guardian = exists_process_cmd( qr{ Guardian }xms, 'root' ) ? 'running' : 'not running';
     print_3rdp('1H Software: ');
     print_3rdp2("/usr/local/1h exists. Guardian process: [ $guardian ]");
 }
@@ -7581,33 +7524,21 @@ sub check_for_webmin {
 }
 
 sub check_for_symantec {
-    for my $process (@PROCESS_LIST) {
-        if ( $process =~ m{ \A root (?:.*) /opt/Symantec/symantec_antivirus }xms ) {
-            print_3rdp('Symantec: ');
-            print_3rdp2('found /opt/Symantec/symantec_antivirus in process list');
-            last;
-        }
-    }
+    return unless exists_process_cmd( qr{ symantec_antivirus }xms, 'root' );
+    print_3rdp('Symantec: ');
+    print_3rdp2('found symantec_antivirus in process list');
 }
 
 sub check_for_haproxy {
-    for my $process (@PROCESS_LIST) {
-        if ( $process =~ m{ \A haproxy (?:.*) haproxy }xms ) {
-            print_3rdp('HAProxy: ');
-            print_3rdp2('found haproxy in process list');
-            last;
-        }
-    }
+    return unless exists_process_cmd( qr{ haproxy }xms, 'haproxy' );
+    print_3rdp('HAProxy: ');
+    print_3rdp2('found haproxy in process list');
 }
 
 sub check_for_newrelic {
-    for my $process (@PROCESS_LIST) {
-        if ( $process =~ /newrelic-daemon/ ) {
-            print_3rdp('newrelic-daemon: ');
-            print_3rdp2('found in process list. Caused server stability issues in 4396009');
-            last;
-        }
-    }
+    return unless exists_process_cmd(qr{ newrelic-daemon }xms);
+    print_3rdp('newrelic-daemon: ');
+    print_3rdp2('found in process list. Caused server stability issues in 4396009');
 }
 
 sub check_for_multilevel_reseller {
@@ -7708,15 +7639,12 @@ sub check_for_cdorked_A {
 
     my @apache_bins = ();
     push @apache_bins, $HTTPD_BIN;
-
-    for my $process (@PROCESS_LIST) {
-        if ( $process =~ m{ \A root \s+ (\d+) [^\d]+ $HTTPD_BIN }xms ) {
-            my $pid          = $1;
-            my $proc_pid_exe = "/proc/" . $pid . "/exe";
-            if ( -l $proc_pid_exe && readlink($proc_pid_exe) =~ m{ \(deleted\) }xms ) {
-                next if ( ( stat($proc_pid_exe) )[7] > $max_bin_size );
-                push @apache_bins, $proc_pid_exe;
-            }
+    my %procs = grep_process_cmd( qr{ $HTTPD_BIN }xms, 'root' );
+    for my $pid ( keys %procs ) {
+        my $proc_pid_exe = "/proc/" . $pid . "/exe";
+        if ( -l $proc_pid_exe && readlink($proc_pid_exe) =~ m{ \(deleted\) }xms ) {
+            next if ( ( stat($proc_pid_exe) )[7] > $max_bin_size );
+            push @apache_bins, $proc_pid_exe;
         }
     }
 
@@ -8068,7 +7996,8 @@ sub check_for_ebury_ssh_shmem {
     for my $href ( @{ $IPCS_REF->{root}{mp} } ) {
         my $shmid = $href->{shmid};
         my $cpid  = $href->{cpid};
-        if ( $PROCESS_REF->{$cpid}{CMD} && $PROCESS_REF->{$cpid}{CMD} =~ m{ \A /usr/sbin/sshd \b }x ) {
+        my $procs = get_process_pid_href();
+        if ( defined $procs->{$cpid} && $procs->{$cpid}->{ARGS} =~ m{ \A /usr/sbin/sshd \b }xms ) {
             print_ebury_cdorked_predef('EBURY');
             print_critical("\tShared memory segment created by sshd process exists:");
             print_critical( "\t\tsshd PID: " . $cpid );
@@ -8288,95 +8217,6 @@ sub check_cpanel_config_for_bad_root {    # Separate from check_cpanel_config be
     }
 }
 
-sub get_ea4_php_fpm_status {
-    return 0 unless $EA4;
-    my $running = 0;
-
-    while ( my ( $pid, $ref ) = each(%$PROCESS_REF) ) {
-        if ( $ref->{COMM} =~ /php\-fpm/ ) {
-            $running = 1;
-            last;
-        }
-    }
-
-    keys %$PROCESS_REF;    # reset iterator
-
-    return $running;
-}
-
-# Examines the system for EasyApache4 PHP FPM, if it exists.
-# It then examines the setup with the following sanity checks
-#   1. Only user pools are in-use (as opposed to a global)
-#   2. Only UNIX sockets are in-use (as opposed to net socket)
-#   3. UNIX sockets have correct perms
-sub check_ea4_php_fpm {
-    return unless $EA4;
-
-    my $ea4_php_fpm = get_ea4_php_fpm_status();
-    return unless $ea4_php_fpm;
-    my @running;
-
-    # gather up a list of running php-fpm process
-    while ( my ( $pid, $ref ) = each(%$PROCESS_REF) ) {
-        next unless $ref->{COMM} =~ /php\-fpm/;
-        push @running, { PID => $pid, %$ref };
-    }
-
-    my ( %shared, %port, %perms );
-
-    # run through each process, checking for bad stuff
-    for my $ref (@running) {
-        my @lsof = split /\n/, timed_run( 0, 'lsof', '-nbP', '-p', $ref->{PID} );
-
-        # e.g. php-fpm 26622 cgi64    0u  unix 0xffff880068acce80      0t0 9183680 /home/cgi64/php-fpm/run/ea-php55.sock
-        # e.g. httpd   26012 nobody   3u  IPv4 9175485                 0t0     TCP *:http (LISTEN)
-        for my $line (@lsof) {
-            my ( $proc, $pid, $user, $fd, $type, $device, $size, $node, $name, $listen ) = split( /\s+/, $line );
-            next unless $proc =~ /php\-fpm/i;    # verify in case it changed between runs
-
-            $shared{$pid} = { user => $user } if ( !$shared{$pid} && ( $user =~ /^apache$/ || $user =~ /^nobody$/ ) );
-
-            if ( $type eq 'unix' && $name =~ /^\// ) {
-                next if $perms{$name};
-                my $mode = ( stat($name) )[2];
-
-                unless ($mode) {
-                    print_warn('EA4 php-fpm: ');
-                    print_warning("Unable to determine UNIX socket permissions (pid:$pid, path:$name)");
-                    next;
-                }
-
-                require Fcntl;
-                $perms{$name} = { pid => $pid, user => $user } if $mode & Fcntl->S_IRWXO;
-            }
-            elsif ( $type =~ /^ipv\d+/i && $listen =~ /LISTEN/i ) {
-                $name =~ s/^.*?:(\d+).*/$1/;
-                $port{$name} = { pid => $pid, user => $user, type => $type } unless $port{$name};
-            }
-        }
-    }
-
-    if ( keys %shared ) {
-        print_warn('EA4 php-fpm: ');
-        my @ports = sort keys %shared;
-        print_warning("Found shared pool(s), instead of dedicated per-user pools (pid:@ports)");
-    }
-
-    if ( keys %perms ) {
-        print_warn('EA4 php-fpm: ');
-        my @paths = sort keys %perms;
-        print_warning("Invalid filesystem permission on UNIX socket(s). Remove 'world' bits: @paths");
-    }
-
-    if ( keys %port ) {
-        print_warn('EA4 php-fpm: ');
-        my @ports = keys %port;
-        print_warning("php-fpm should not be listening on port(s): @ports");
-    }
-
-    return 1;
-}
-
 sub get_myip {
     my ($port) = @_;
     $port = defined $port ? $port : '80';
@@ -8464,7 +8304,7 @@ sub print_bug_report {
     my $cpu         = $CPUINFO->{'model'}        ? $CPUINFO->{'model'}        : 'Unknown';
     my $cores       = $CPUINFO->{'numcores'}     ? $CPUINFO->{'numcores'}     : 'Unknown';
     my $ticket      = "";
-    if ( $ENV{HISTFILE} =~ /ticket.(\d+)$/ ) {
+    if ( defined $ENV{HISTFILE} and $ENV{HISTFILE} =~ /ticket.(\d+)$/ ) {
         $ticket = $1;
     }
 
