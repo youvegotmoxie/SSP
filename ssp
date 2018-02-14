@@ -6116,12 +6116,15 @@ sub check_for_disabled_services {
     );
 
     my %cpconfcheck = (
-        'skipchkservd'   => 'chkservd',
-        'skipcpbandwd'   => 'cpbandwd',
-        'skipeximstats'  => 'eximstats',
-        'skipmailman'    => 'mailman',
-        'skipmodseclog'  => 'modseclog',
-        'skiptailwatchd' => 'tailwatchd',
+        'skipapnspush'                  => 'apnspush',
+        'skipchkservd'                  => 'chkservd',
+        'skipcpbandwd'                  => 'cpbandwd',
+        'skipeximstats'                 => 'eximstats',
+        'skipmailhealth'                => 'mailhealth',
+        'skipmailman'                   => 'mailman',
+        'skipmodseclog'                 => 'modseclog',
+        'skiprecentauthedmailiptracker' => 'recentauthedmailiptracker',
+        'skiptailwatchd'                => 'tailwatchd',
     );
 
     while ( my ( $touchfile, $service ) = each(%touchfiles) ) {
