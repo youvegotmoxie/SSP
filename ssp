@@ -216,20 +216,14 @@ sub init {
 }
 
 sub run {
-    my (@argv) = @_;
-
+    local @ARGV = @_;    # Because GetOptionsFromArray available in Getopt::Long 2.36 and later only, Perl 5.8.8 on CentOS 5.11 includes 2.35
     my ( $only_csi, $only_bugreport );
 
-    init();
-
-    if ( defined &Getopt::Long::GetOptionsFromArray ) {    # GetOpt::Long 2.36 and later only, Perl 5.8.8 on CentOS 5.11 includes 2.35
-        Getopt::Long::GetOptionsFromArray(
-            \@argv,
-            'bugreport' => \$only_bugreport,
-            'csi'       => \$only_csi,
-            'timeout=i' => \$OPT_TIMEOUT,
-        );
-    }
+    Getopt::Long::GetOptions(
+        'bugreport' => \$only_bugreport,
+        'csi'       => \$only_csi,
+        'timeout=i' => \$OPT_TIMEOUT,
+    );
 
     if ($OPT_TIMEOUT) {
         $OPT_TIMEOUT = int $OPT_TIMEOUT;
@@ -237,6 +231,8 @@ sub run {
             $OPT_TIMEOUT = 5;
         }
     }
+
+    init();
 
     ######################
     ##  END GLOBALS     ##
