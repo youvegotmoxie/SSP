@@ -221,7 +221,7 @@ sub run {
 
     Getopt::Long::GetOptions(
         'bugreport' => \$only_bugreport,
-		'docreport' => \$only_docreport,
+        'docreport' => \$only_docreport,
         'csi'       => \$only_csi,
         'timeout=i' => \$OPT_TIMEOUT,
     );
@@ -8356,8 +8356,8 @@ END_OF_TEMPLATE
 }
 
 sub print_doc_bug_report {
-    my $version     = $CPANEL_VERSION            ? $CPANEL_VERSION            : 'Unknown';
-    my $ticket      = "";
+    my $version = $CPANEL_VERSION ? $CPANEL_VERSION : 'Unknown';
+    my $ticket = "";
     if ( defined $ENV{HISTFILE} and $ENV{HISTFILE} =~ /ticket.(\d+)$/ ) {
         $ticket = $1;
     }
