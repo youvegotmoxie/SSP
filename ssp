@@ -8364,35 +8364,36 @@ sub print_doc_bug_report {
     print <<END_OF_TEMPLATE
 ==== BEGIN COPY BELOW ====
 {panel:title=(i) Document and ticket URLS}
-   
+
 * Link to the document that requires modification.
 * Link to the support ticket that contains the relevant information.
-   
+
 {panel}
-   
+
 ----
-   
+
 {panel:title=(+) Details}
-   
+
 Provide relevant information for any documentation changes.
 If this is a request for new documentation, provide an outline with the technical details required to complete the document.
-  
-   
-----
-   
-{panel:title=(?) Steps to reproduce}
-  
-Provide any technical steps required by the writer for the changes needed.
-   
+
 {panel}
-   
+
 ----
-   
+
+{panel:title=(?) Steps to reproduce}
+
+Provide any technical steps required by the writer for the changes needed.
+
+{panel}
+
+----
+
 {panel:title=(/) Additional Information}
-  
-  
+
+
 Any other useful information for the tech writer to complete the changes.
-   
+
 {panel}
 ==== END COPY ABOVE ====
 
