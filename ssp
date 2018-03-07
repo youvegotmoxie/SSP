@@ -3697,7 +3697,7 @@ sub check_for_huge_logs {
     return unless i_am_one_of( 'cpanel', 'dnsonly' );
 
     # Default size is 2_100_000_000, with no additional help text.
-    # Example: '/path/to/file' => { size => 1_000_000_000, help => 'If file is too hyooge, THERE IS MUCH FAIL' }
+    # Example: '/path/to/file' => { info_size => 500_000_000, warn_size => 1_000_000_000, help => 'If file is too hyooge, THERE IS MUCH FAIL' }
     my %logs = (
         '/usr/local/apache/logs/access_log'       => {},
         '/usr/local/apache/logs/error_log'        => {},
@@ -3708,17 +3708,23 @@ sub check_for_huge_logs {
         '/usr/local/apache/logs/suphp_log'        => {},
         '/var/cpanel/secdatadir/ip.pag'           => { help => 'Apache using a lot of CPU for no good reason? Try moving aside and restarting Apache. See EA-4092.' },
         '/var/named/data/named.run'               => {},
-        '/var/cpanel/eximstats_db.sqlite3'        => { size => 5_000_000_000 },
+        '/var/cpanel/backups/metadata.sqlite'     => { info_size => 1_000_000_000, warn_size => 10_000_000_000 },
+        '/var/cpanel/eximstats_db.sqlite3' => { warn_size => 5_000_000_000 },
     );
     for my $log ( keys(%logs) ) {
         if ( -e $log ) {
             my $size       = ( stat($log) )[7];
-            my $check_size = exists( $logs{$log}->{size} ) ? $logs{$log}->{size} : 2_100_000_000;
+            my $info_size  = exists( $logs{$log}->{info_size} ) ? $logs{$log}->{info_size} : undef;
+            my $warn_size  = exists( $logs{$log}->{warn_size} ) ? $logs{$log}->{warn_size} : 2_100_000_000;
             my $help       = exists( $logs{$log}->{help} ) ? ' - ' . $logs{$log}->{help} : '';
-            if ( $size > $check_size ) {
-                $size = sprintf( "%0.2fGB", $size / 1073741824 );
+            my $print_size = sprintf( "%0.2fGB", $size / 1073741824 );
+            if ( $size > $warn_size ) {
                 print_warn('M-M-M-MONSTER LOG!: ');
-                print_warning( $log . ' (' . $size . ')' . $help );
+                print_warning( $log . ' (' . $print_size . ')' . $help );
+            }
+            elsif ( $info_size and ( $size > $info_size ) ) {
+                print_info('Large Log: ');
+                print_normal( $log . ' (' . $print_size . ')' . $help );
             }
         }
     }
