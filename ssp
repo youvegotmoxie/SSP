@@ -84,6 +84,7 @@ our @LSOF_80;
 our $ORIGINAL_PATH;
 our %SOCKET;                   # Dispatcher for optional Socket module usage
 our $RUN_STATE;
+our $HTTP_GET_HOST_CACHE;
 
 run(@ARGV) unless caller;
 
@@ -5953,6 +5954,10 @@ sub check_for_license_info {
                 $license{'cloudlinux'} = "CloudLinux";
             }
 
+            if ( $reply =~ /alt="DNSONLY"/ ) {
+                $license{'dnsonly'} = "DNSONLY";
+            }
+
             if ( $reply =~ /alt="KernelCare"/ ) {
                 $license{'kernelcare'} = "KernelCare";
             }
@@ -5967,7 +5972,7 @@ sub check_for_license_info {
         }
         else {
             print_info('License: ');
-            print_normal("Not detected - verify at ${helper_url}");
+            print_normal("Not found on verify.cpanel.net, or request timed out -- verify at ${helper_url}");
         }
         if ( exists( $license{'onetime'} ) ) {
             print_warn('License: ');
@@ -5983,11 +5988,6 @@ sub check_for_license_info {
     if ($file_is_solo) {
         print_info('License: ');
         print_normal('cPanel Solo (limited to 1 account)');
-    }
-
-    if ($file_is_dnsonly) {
-        print_info('License: ');
-        print_normal('DNSONLY');
     }
 
     my $cpanel_17906_text =
@@ -8070,6 +8070,7 @@ sub _http_get {
     my (%opts_in) = @_;
     my %opts = (
         Agent               => "SSP/${VERSION}",
+        HostReconnectDelay  => 0.25,
         MaxReply            => 50_000,
         Path                => '/',
         Port                => 80,
@@ -8093,6 +8094,11 @@ sub _http_get {
                 close $sock if defined $sock;
                 die "alarm\n";
             };
+            my $now = time();
+            if ( defined $HTTP_GET_HOST_CACHE->{ $opts{Host} } and $now - $HTTP_GET_HOST_CACHE->{ $opts{Host} } <= $opts{HostReconnectDelay} ) {
+                select( undef, undef, undef, $opts{HostReconnectDelay} );    ## no critic (ProhibitSleepViaSelect) # old perl compat
+            }
+            $HTTP_GET_HOST_CACHE->{ $opts{Host} } = $now;
             alarm $opts{Timeout};
             $sock = IO::Socket::INET->new(
                 PeerAddr => $opts{Host},
