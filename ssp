@@ -623,27 +623,21 @@ sub get_cpanel_conf {
 }
 
 sub get_cpanel_version {
-    my $version;
+    my $numeric_version;
+    my $original_version;
 
-    local $/ = undef;
     if ( open my $file_fh, '<', $CPANEL_VERSION_FILE ) {
-        $version = <$file_fh>;
+        $original_version = readline($file_fh);
         close $file_fh;
     }
+    return ( 'UNKNOWN', 'UNKNOWN' ) unless defined $original_version;
+    chomp $original_version;
 
-    if ($version) {
-        if ( $version =~ /(\d+\.\d+\.\d+\.\d+)/ ) {
-            $version = $1;
-        }
-        else {
-            $version = q{UNKNOWN};
-        }
-    }
-    else {
-        $version = q{UNKNOWN};
-    }
+    # Parse either 1.2.3.4 or 1.2.3-THING_4 to 1.2.3.4
+    $numeric_version = join( '.', split( /\.|-[a-zA-Z]+_/, $original_version ) );
+    $numeric_version = 'UNKNOWN' unless $numeric_version =~ /^\d+\.\d+\.\d+\.\d+$/;
 
-    return $version;
+    return ( $numeric_version, $original_version );
 }
 
 sub _version_cmp {
@@ -1450,7 +1444,7 @@ sub print_cpanel_info {
     $last_update = $last_update / 86400;
     $last_update = sprintf '%.1f', $last_update;
 
-    my $output = _get_run_var('cpanel_version') . '(' . uc($cpanel_tier) . ' tier)' . " Last update: $last_update days ago";
+    my $output = _get_run_var('cpanel_original_version') . ' (' . uc($cpanel_tier) . ' tier)' . " Last update: $last_update days ago";
     $output .= " [ Installed $birthday ]" if $birthday;
 
     print_info('cPanel Info: ');
@@ -1465,7 +1459,7 @@ sub print_cpanel_info {
         '66' => { expires => 0,          text => 'December 4, 2017' },
     );
 
-    my ( $parent_ver, $major_ver ) = split( /\./, _get_run_var('cpanel_version'), 3 );
+    my ( $parent_ver, $major_ver ) = split( /\./, _get_run_var('cpanel_numeric_version'), 3 );
     my $expire_info;
     if ( defined $parent_ver and defined $major_ver ) {
         $major_ver++ if $major_ver % 2;    # Bump odd dev versions
@@ -1496,7 +1490,7 @@ sub check_for_cpanel_update {
 
     return unless defined $CPUPDATE_CONF->{CPANEL};
 
-    if ( _get_run_var('cpanel_version') eq 'UNKNOWN' ) {
+    if ( _get_run_var('cpanel_numeric_version') eq 'UNKNOWN' ) {
         print_info('cPanel update check: ');
         print_warning("unknown or old cPanel version, check $CPANEL_VERSION_FILE");
         return;
@@ -1525,7 +1519,7 @@ sub check_for_cpanel_update {
 
     if ( cpanel_version_is( '<', $available_tier_version ) ) {
         print_info('cPanel update check: ');
-        print_warning( "UPDATE AVAILABLE (" . _get_run_var('cpanel_version') . " -> $available_tier_version)" );
+        print_warning( "UPDATE AVAILABLE (" . _get_run_var('cpanel_original_version') . " -> $available_tier_version)" );
     }
 }
 
@@ -8147,7 +8141,7 @@ sub _month_to_num {
 }
 
 sub print_bug_report {
-    my $version     = _get_run_var('cpanel_version');
+    my $version     = _get_run_var('cpanel_original_version');
     my $os          = _get_run_var('os_release');
     my $kernel      = $HOSTINFO->{'kernel'} ? $HOSTINFO->{'kernel'} : 'Unknown';
     my $arch        = $HOSTINFO->{'hardware'} ? $HOSTINFO->{'hardware'} : 'Unknown';
@@ -8198,7 +8192,7 @@ END_OF_TEMPLATE
 }
 
 sub print_doc_bug_report {
-    my $version = _get_run_var('cpanel_version');
+    my $version = _get_run_var('cpanel_original_version');
     my $ticket  = "";
     if ( defined $ENV{HISTFILE} and $ENV{HISTFILE} =~ /ticket.(\d+)$/ ) {
         $ticket = $1;
@@ -8306,7 +8300,9 @@ sub _populate_run_state {    ## no critic (RequireArgUnpacking)
                 _set_run_type('ea3');
             }
         }
-        _set_run_var( 'cpanel_version', get_cpanel_version() );
+        my ( $cp_numeric_version, $cp_original_version ) = get_cpanel_version();
+        _set_run_var( 'cpanel_numeric_version',  $cp_numeric_version );
+        _set_run_var( 'cpanel_original_version', $cp_original_version );
     }
 
     # Loosely based on info found in Cpanel::Sys::OS and Cpanel::Sys::GetOS.  First release file wins.
@@ -8349,10 +8345,11 @@ sub _init_run_state {
             amazon     => 1 << 7,
         },
         var => {
-            cpanel_version => "UNKNOWN",
-            os_release     => "UNKNOWN",
-            os_version     => "UNKNOWN",
-            os_ises        => 0,
+            cpanel_numeric_version  => "UNKNOWN",
+            cpanel_original_version => "UNKNOWN",
+            os_release              => "UNKNOWN",
+            os_version              => "UNKNOWN",
+            os_ises                 => 0,
         },
     };
     return 1;
@@ -8409,7 +8406,7 @@ sub i_am_one_of {            ## no critic (RequireArgUnpacking)
 
 sub cpanel_version_is {
     my ( $mode, $ver ) = @_;
-    return version_compare( $RUN_STATE->{var}->{cpanel_version}, $mode, $ver );
+    return version_compare( $RUN_STATE->{var}->{cpanel_numeric_version}, $mode, $ver );
 }
 
 sub os_version_is {
