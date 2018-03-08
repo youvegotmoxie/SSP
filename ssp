@@ -684,26 +684,26 @@ sub version_compare {
 }
 
 sub _timedsaferun {    # Borrowed from WHM 66 Cpanel::SafeRun::Timed and modified
+                       # We need to be sure to never return undef, return an empty string instead.
     my ( $timer, $stderr_to_stdout, @PROGA ) = @_;
-    return if ( substr( $PROGA[0], 0, 1 ) eq '/' && !-x $PROGA[0] );
+    return '' if ( substr( $PROGA[0], 0, 1 ) eq '/' && !-x $PROGA[0] );
     $timer = $timer       ? $timer       : 25;       # A timer value of 0 means use the default, currently 25.
     $timer = $OPT_TIMEOUT ? $OPT_TIMEOUT : $timer;
 
-    my $output   = "";
+    my $output;
     my $complete = 0;
     my $pid;
     my $fh;                                          # FB-63723: must declare $fh before eval block in order to avoid unwanted implicit waitpid on die
     eval {
         local $SIG{'__DIE__'} = 'DEFAULT';
-        local $SIG{'ALRM'} = sub { $output = ""; print RED ON_BLACK "Timeout while executing: " . join( ' ', @PROGA ) . "\n"; die; };
+        local $SIG{'ALRM'} = sub { $output = ''; print RED ON_BLACK 'Timeout while executing: ' . join( ' ', @PROGA ) . "\n"; die; };
         alarm($timer);
-        if ( $pid = open( $fh, '-|' ) ) {
+        if ( $pid = open( $fh, '-|' ) ) {            ## no critic (BriefOpen)
             local $/;
             $output = readline($fh);
             close($fh);
         }
         elsif ( defined $pid ) {
-            my $save_stderr_fh;
             open( STDIN, '<', '/dev/null' );         ## no critic (BriefOpen)
             if ($stderr_to_stdout) {
                 open( STDERR, '>&', 'STDOUT' );      ## no critic (BriefOpen)
@@ -714,23 +714,20 @@ sub _timedsaferun {    # Borrowed from WHM 66 Cpanel::SafeRun::Timed and modifie
             exec(@PROGA) or exit 1;
         }
         else {
-            warn 'Error while executing: [' . join( ' ', @PROGA ) . ']: ' . $!;
-            alarm(0);
-            return "";
+            print RED ON_BLACK 'Error while executing: [ ' . join( ' ', @PROGA ) . ' ]: ' . $! . "\n";
+            alarm 0;
+            die;
         }
         $complete = 1;
         alarm 0;
     };
-    if ($@) {
-        $output .= $@;
-    }
     alarm 0;
     if ( !$complete && $pid && $pid > 0 ) {
         kill( 15, $pid );    #TERM
         sleep(2);            # Give the process a chance to die 'nicely'
         kill( 9, $pid );     #KILL
     }
-    return $output;
+    return defined $output ? $output : '';
 }
 
 sub timed_run {
