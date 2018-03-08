@@ -448,6 +448,7 @@ sub long_check_list {
     check_for_allow_update_in_named_conf();
     check_for_broken_mysqldump();
     check_exim_log_sanity();
+    check_exim_localopts();
     check_updatelog();
     check_for_readonly_filesystems();
     check_for_cl_unsupported_memory_limits();
@@ -6903,6 +6904,34 @@ sub check_exim_log_sanity {
                 print_warn("$log: ");
                 print_warning('is not owned by "mailnull"');
             }
+        }
+    }
+}
+
+sub check_exim_localopts {
+    return unless i_am_one_of( 'cpanel', 'dnsonly' );
+    return unless defined $EXIM_LOCAL_OPTS;
+    return unless scalar keys( %{$EXIM_LOCAL_OPTS} );
+
+    # Example: 'exact_option_name' => { default => 'defaultvalue', check_missing => 1, help => '- Help text' },
+    # default, check_missing, and help are optional
+    # If check_missing exists, a warning is generated if the item is NOT in exim.conf.localopts and does not match the default (if given) or is empty
+
+    my %checks = (
+        'allowweakciphers' => { default => '0', help => '"Allow weak SSL/TLS ciphers" enabled, this removes tls_require_ciphers from exim.conf.  It is better to disable this and customize "SSL/TLS Cipher Suite List" instead.' },
+    );
+
+    for my $check ( sort( keys(%checks) ) ) {
+        $checks{$check}->{check_missing} = 0  unless defined( $checks{$check}->{check_missing} );
+        $checks{$check}->{help}          = '' unless defined( $checks{$check}->{help} );
+        my $help = $checks{$check}->{help} ? ' - ' . $checks{$check}->{help} : '';
+        if ( defined( $EXIM_LOCAL_OPTS->{$check} ) && defined( $checks{$check}->{default} ) && !( $EXIM_LOCAL_OPTS->{$check} eq $checks{$check}->{default} ) ) {
+            print_warn('/etc/exim.conf.localopts: ');
+            print_warning("[ $check = $EXIM_LOCAL_OPTS->{$check} ] $help");
+        }
+        elsif ( $checks{$check}->{check_missing} && ( !defined( $EXIM_LOCAL_OPTS->{$check} ) || ( defined( $EXIM_LOCAL_OPTS->{$check} ) && $EXIM_LOCAL_OPTS->{$check} eq '' ) ) ) {
+            print_warn('/etc/exim.conf.localopts: ');
+            print_warning("[ $check ] not found or has empty value. $help");
         }
     }
 }
