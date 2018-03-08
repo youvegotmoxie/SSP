@@ -7904,6 +7904,8 @@ sub check_for_cpro {
       /YasITCSP/
       /etc/customcspips
       /usr/bin/clnupdate
+      /usr/bin/update_clnv2
+      /usr/bin/update_clnv2.lock
       /usr/bin/update_cpanelv2
       /usr/bin/update_cpanelv2.lock
       /usr/bin/yasin
