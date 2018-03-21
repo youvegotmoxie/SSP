@@ -35,7 +35,7 @@ use Getopt::Long();
 use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.182';
+our $VERSION = '4.99.183';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
