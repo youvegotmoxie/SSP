@@ -3614,9 +3614,9 @@ sub check_for_hooks_in_scripts_directory {
 
     # default CloudLinux, cPGs hooks that can be ignored
     my %hooks_ignore = qw(
+      3035bcfdf629b8494bcd3dc933e97f30  /scripts/postkillacct 
       4988be925a6f50ec505618a7cec702e2  /scripts/postkillacct
       49e17847bdcb790fd30a1916427091b3  /scripts/postkillacct
-      3035bcfdf629b8494bcd3dc933e97f30  /scripts/postkillacct
       28620050548a2e4b500ab7426aaa0df5  /scripts/postmodifyacct
       42a624c843f34085f1532b0b4e17fe8c  /scripts/postmodifyacct
       66c14efb37684262be9f5fe5c13baa15  /scripts/postmodifyacct
