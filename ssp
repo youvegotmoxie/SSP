@@ -35,7 +35,7 @@ use Getopt::Long();
 use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.183';
+our $VERSION = '4.99.184';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
@@ -3518,7 +3518,7 @@ sub check_var_cpanel_users {
     my $var_cpanel_users = '/var/cpanel/users';
     return unless -d $var_cpanel_users;
     return unless opendir( my $dir_fh, $var_cpanel_users );
-    my @files = grep { !m/^(?:\.\.?|root|system|nobody|cp[0-9]{7,8}[a-z]{6})$/ } readdir $dir_fh;
+    my @files = grep { !m/^(?:\.\.?|root|system|nobody|^cptkt\w{11})$/ } readdir $dir_fh;
     closedir $dir_fh;
 
     my $group_root_files;
