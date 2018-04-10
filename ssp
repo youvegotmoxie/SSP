@@ -8323,7 +8323,7 @@ sub _memoize {    ## no critic (RequireArgUnpacking)
     }
 }
 
-sub _memoize_async_populate_cache {    ## no critic (RequireArgUnpacking)
+sub _memoize_parallel_populate_cache {    ## no critic (RequireArgUnpacking)
     for my $func (@_) {
         if ( exists $MEMOIZE_CACHE{$func} ) {
             new_async_call( $func, \&$func );
