@@ -35,7 +35,7 @@ use Getopt::Long();
 use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.183';
+our $VERSION = '4.99.184';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
@@ -1259,7 +1259,7 @@ sub check_for_multiple_tech_logins {
     return if $num_logins <= 1;
 
     print_critical();
-    print_crit('Multiple tech SSH sessions are active (run "ls /var/cpanel/users/ |grep cp[0-9]" for a complete list of ticket users):');
+    print_crit('Multiple tech SSH sessions are active (run "ls /var/cpanel/users/ |grep cptkt" for a complete list of ticket users):');
     print_critical("\n");
     print_critical($header) if $header;
     print_critical( join( "\n", @tech_logins ) );
@@ -3492,7 +3492,7 @@ sub check_var_cpanel_users {
     my $var_cpanel_users = '/var/cpanel/users';
     return unless -d $var_cpanel_users;
     return unless opendir( my $dir_fh, $var_cpanel_users );
-    my @files = grep { !m/^(?:\.\.?|root|system|nobody|cp[0-9]{7,8}[a-z]{6})$/ } readdir $dir_fh;
+    my @files = grep { !m/^(?:\.\.?|root|system|nobody|^cptkt\w{11})$/ } readdir $dir_fh;
     closedir $dir_fh;
 
     my $group_root_files;
