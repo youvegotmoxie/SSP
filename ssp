@@ -3586,7 +3586,7 @@ sub check_for_hooks_in_scripts_directory {
         print_warning('/usr/local/cpanel/Cpanel/CustomEventHandler.pm exists!');
     }
 
-    # default CloudLinux, cPGs hooks that can be ignored
+    # These md5sums are DEPRECATED and will be removed after a transitional period.  Use the string white-list instead.
     my %hooks_ignore = qw(
       3035bcfdf629b8494bcd3dc933e97f30  /scripts/postkillacct
       4988be925a6f50ec505618a7cec702e2  /scripts/postkillacct
@@ -3628,7 +3628,7 @@ sub check_for_hooks_in_scripts_directory {
     my @hooks;
     if ( -d '/scripts' ) {
         opendir( my $scripts_fh, '/scripts' );
-        @hooks = grep { /^(pre|post)/ } readdir $scripts_fh;
+        @hooks = sort grep { /^(pre|post)/ } readdir $scripts_fh;
         closedir $scripts_fh;
     }
 
@@ -3641,23 +3641,83 @@ sub check_for_hooks_in_scripts_directory {
     # EA3 stuff checked elsewhere
     @hooks = grep { !/easyapache/ } @hooks;
 
-    my $hooks_output;
-    if (@hooks) {
-        for my $hook (@hooks) {
-            $hook = '/scripts/' . $hook;
-            chomp( my $checksum = timed_run( 0, 'md5sum', $hook ) );
-            $checksum =~ s/\s.*//g;
-            next if exists $hooks_ignore{$checksum};
+    my @custom_hooks;
+    my $comment_pattern = '\s*(?:\#.*)?';
+    my $cl_post_pattern = '(?:\.(?:pl|py|sh))?(?:\s+"\$@")?';
 
-            if ( !-z $hook ) {
-                $hooks_output .= " $hook ";
+    for my $hook (@hooks) {
+        my $hook_file = '/scripts/' . $hook;
+        next if -z $hook_file;
+
+        if ( open my $hook_fd, '<', $hook_file ) {    ## no critic (BriefOpen)
+            my $is_custom;
+            my $first_line = readline $hook_fd;
+            if ( $first_line and $first_line !~ m{ \A #!/bin/bash $comment_pattern \Z }xms ) {
+                $is_custom = 1;
+            }
+            while (<$hook_fd>) {
+                next if m{ \A $comment_pattern \Z }xms;
+
+                if ( i_am('cloudlinux') ) {
+                    next if m{ \A
+                       (
+                         \Q/usr/share/cagefs/cpanel/cagefs_\E $hook \Q_hook\E $cl_post_pattern
+                       | \Q/usr/share/l.v.e-manager/cpanel/hooks/\E (lve|l\.v\.e-) \Qmanager_\E $hook \Q_hook\E $cl_post_pattern
+                       )
+                       $comment_pattern
+                       \Z }xms;
+                    if ( $hook eq 'postrestoreacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cagefs/cpanel/cagefs_postwwwacct_hook.pl\E \s+ user \s+ \"\$1\"
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'postkillacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'postupcp' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cloudlinux-linksafe/cpanel/hooks/cloudlinux_linksafe_hook.sh\E
+                        | \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'prekillacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cagefs-plugins/hooks/terminate_cagefs_account\E $cl_post_pattern
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                }
+                $is_custom = 1;
+            }
+            close $hook_fd;
+
+            if ($is_custom) {
+                if ( i_am('cloudlinux') ) {
+                    chomp( my $checksum = timed_run( 0, 'md5sum', $hook_file ) );
+                    $checksum =~ s/\s.*//g;
+                    if ( exists $hooks_ignore{$checksum} ) {
+                        print_info('Hooks: ');
+                        print_normal("$hook_file matched md5sum, but not string whitelist. Please add a copy of this hook file to TECH-507.");
+                        next;
+                    }
+                }
+                push @custom_hooks, $hook_file;
             }
         }
     }
 
-    if ($hooks_output) {
+    if ( scalar @custom_hooks ) {
         print_warn('Hooks: ');
-        print_warning($hooks_output);
+        print_warning( join( ' ', @custom_hooks ) );
     }
 }
 
