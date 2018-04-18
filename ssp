@@ -3706,7 +3706,7 @@ sub check_for_hooks_in_scripts_directory {
                     $checksum =~ s/\s.*//g;
                     if ( exists $hooks_ignore{$checksum} ) {
                         print_info('Hooks: ');
-                        print_normal("$hook_file matched md5sum, but not string whitelist. Please add a copy of this hook file to TECH-507.");
+                        print_warning("$hook_file matched md5sum, but did not match string whitelist. Please notify SSP developer or create a new TECH case and provide a copy of this hook file.");
                         next;
                     }
                 }
