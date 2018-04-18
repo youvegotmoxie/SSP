@@ -197,8 +197,8 @@ sub run {
     check_for_hacked_server_touchfile();
     check_for_multiple_tech_logins();
     check_for_lve_environment();
+    check_for_systemd();
     check_for_os_release_5();
-    check_for_os_release_7();
     check_for_os_release_32bit();
     check_for_ea3();
 
@@ -1314,17 +1314,17 @@ sub get_lsws_version {
     return ( $lsws_full_version, $lsws_numeric_version );
 }
 
+sub check_for_systemd {
+    return unless ( -e '/usr/bin/systemctl' or -e '/bin/systemctl' ) and ( -e '/usr/lib/systemd/systemd' or -e '/lib/systemd/systemd' );    # Don't assume /bin or /lib symlinks to /usr are in place
+    print_crit('Systemd: ');
+    print_critical('Use /scripts/restartsrv_* (preferred) or systemctl to restart services -- never use /etc/init.d scripts.');
+}
+
 sub check_for_os_release_5 {
     return unless os_version_is(qw( < 6 ));
     print_crit('CentOS/RHEL/CL 5 (or older): ');
     print_critical('This operating system is not supported in WHM 58 and later (OS version 6+ only).');
     print_critical('         \_ Send customer this premade: "MIGRATION - CentOS/RHEL/CL 5 EOL"');
-}
-
-sub check_for_os_release_7 {
-    return unless os_version_is(qw( >= 7 ));
-    print_crit('CentOS/RHEL/CL 7+: ');
-    print_critical('Use /scripts/restartsrv to restart services, not /etc/init.d scripts.');
 }
 
 sub check_for_os_release_32bit {
