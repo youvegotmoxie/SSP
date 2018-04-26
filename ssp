@@ -5605,9 +5605,9 @@ sub check_for_rpm_overrides {
         }
         if ( exists $ref->{'target_settings'} ) {
             foreach my $package ( sort keys %{ $ref->{'target_settings'} } ) {
-                next if exists $ignore->{'target_settings'}->{$package} and $ref->{'target_settings'}{$package} =~ m{ \A $ignore->{'target_settings'}->{$package} \Z }xms;
+                next if exists $ignore->{'target_settings'}->{$package} and $ref->{'target_settings'}->{$package} =~ m{ \A $ignore->{'target_settings'}->{$package} \Z }xms;
                 print_warn( $local_versions . ': ' );
-                print_warning( $package . ' is configured as ' . $ref->{'target_settings'}{$package} );
+                print_warning( $package . ' is configured as ' . $ref->{'target_settings'}->{$package} );
             }
         }
         for my $section (qw( install_targets rpm_groups rpm_locations srpm_sub_packages srpm_versions url_templates )) {
