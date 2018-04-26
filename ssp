@@ -395,6 +395,7 @@ sub run {
     check_for_cron_allow();
     check_for_dev_sandbox();
     check_for_jail_owner();
+    check_sshd_config();
 
     # [3RDP]
     check_smtp_processes();
@@ -7931,6 +7932,67 @@ sub get_printable_rpm_packages {
 sub get_openssl_rpm_changelog_sref {
     my $changelog = timed_run( 0, qw( rpm -q --changelog openssl ) );
     return \$changelog;
+}
+
+sub get_flat_conf_href {
+
+    # Import an unstructured, commented config file delimited by whitespace, equal, or colon after a single keyword.
+    # Hash keys are stored lowercase if $lower_key is true (only use when configuration keywords are case-insensitive!)
+    # The original keyword case is stored in array position 0, and the value is stored in array position 1.
+    # Should work for sshd_config with $lowercase=1, cpanel.config and php.ini with $lowercase=0, etc.
+    # This does not work for configuration keywords that can be used multiple times, only the last keyword found will be stored.
+    my ( $file, $lower_key ) = @_;
+    return unless defined $file;
+    return unless -e $file;
+    my %conf;
+    open my $fh, '<', $file or return;
+    while ( my $line = <$fh> ) {
+        next if $line =~ m{ \A \s* ( [;#] | \s* \Z ) }xms;    # Ignore comments prefixed by hash or semicolon, or empty lines
+        my ( $key, $value ) = split( /\s*[\s=:]\s*/, $line, 2 );    # Split on whitespace, =, or :.  Ignore additional whitespace.
+        next unless defined $key;
+        $key =~ s{ \A \s+ | \s+ \Z }{}gxms;                         # Strip leading/trailing whitespace
+        $key =~ s{ \A ['"] | ['"] \Z }{}gxms;                       # Strip leading/trailing quotes
+        if ( defined $value ) {
+            $value =~ s{ \A \s+ | \s+ \Z }{}gxms;
+            $value =~ s{ \A ['"] | ['"] \Z }{}gxms;
+        }
+        $conf{ $lower_key ? lc($key) : $key } = [ $key, $value ];
+    }
+    close $fh;
+    return \%conf;
+}
+
+sub check_sshd_config {
+    return unless i_am_one_of( 'cpanel', 'dnsonly' );
+    my $sshd_config = '/etc/ssh/sshd_config';
+    return unless my $conf = get_flat_conf_href( $sshd_config, 1 );
+
+    # Example: 'lowercaseoption' => { default => 'lowercasedefaultvalue', check_missing => 1, orig_name => 'MixedCaseName', help => 'Help text' },
+    # default, check_missing, and help are optional, but orig_name should be defined if check_missing is used so that the mixed-case name can be printed
+    # If check_missing exists, a warning is generated if the item is NOT in sshd_conf and does not match the default (if given)
+    my %checks;
+    if ( not -e '/etc/cphulkddisable' ) {
+        $checks{'usedns'} = { default => 'no',  check_missing => 1, orig_name => 'UseDNS', help => 'UseDNS must be explicitly disabled for cPHulk to work correctly for SSH logins' };
+        $checks{'usepam'} = { default => 'yes', check_missing => 1, orig_name => 'UsePAM', help => 'UsePAM must be explicitly enabled for cPHulk and/or CageFS to process SSH logins' };
+    }
+
+    for my $lc_key ( sort( keys(%checks) ) ) {
+        my $check         = $checks{$lc_key};
+        my $lc_default    = defined $check->{default} ? $check->{default} : '';
+        my $check_missing = defined $check->{check_missing} ? 1 : 0;
+        my $missing_name  = defined $check->{orig_name} ? $check->{orig_name} : $lc_key;
+        my $help          = defined $check->{help} ? '- ' . $check->{help} : '';
+        my ( $conf_key, $conf_value ) = defined $conf->{$lc_key} ? @{ $conf->{$lc_key} } : undef;
+        my $lc_conf_value = defined $conf_value ? lc($conf_value) : undef;
+        if ( defined $lc_conf_value and $lc_conf_value ne $lc_default ) {
+            print_warn( $sshd_config . ': ' );
+            print_warning("[ $conf_key $conf_value ] $help");
+        }
+        elsif ( $check_missing and not defined $conf_value ) {
+            print_warn( $sshd_config . ': ' );
+            print_warning("[ $missing_name ] not found $help");
+        }
+    }
 }
 
 sub check_pure_ftpd_conf_for_upload_script_and_dead {
