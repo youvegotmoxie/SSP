@@ -5506,19 +5506,14 @@ sub check_for_rpm_overrides {
     my $rpm_override_dir = '/var/cpanel/rpm.versions.d/';
     return unless -d $rpm_override_dir;
 
-    my $local_versions = '/var/cpanel/rpm.versions.d/local.versions';
-    my $easy_versions  = '/var/cpanel/rpm.versions.d/easy.versions';
-    my $cloud_versions = '/var/cpanel/rpm.versions.d/cloudlinux.versions';
-    my $md5_local;
+    my $expected_file_version = '2';
+    my $local_versions        = $rpm_override_dir . 'local.versions';
+    my $easy_versions         = $rpm_override_dir . 'easy.versions';
+    my $cloud_versions        = $rpm_override_dir . 'cloudlinux.versions';
     my $md5_easy;
     my $md5_cloud;
-    my $local_is_default = 0;
     my $easy_is_default  = 0;
     my $cloud_is_default = 0;
-
-    if ( -f $local_versions ) {
-        $md5_local = timed_run( 0, 'md5sum', $local_versions );
-    }
 
     if ( -f $easy_versions ) {
         $md5_easy = timed_run( 0, 'md5sum', $easy_versions );
@@ -5530,35 +5525,10 @@ sub check_for_rpm_overrides {
 
     ## these are checksums for default files. we ignore them to prevent needless output from SSP
     if (
-           $md5_local
-        && $md5_local =~ m{ \A (
-                                 12f23aecb8622647469273aa00c2bf63
-                               | 1311deca9b898350d3660f6ea381af4b
-                               | 1d9f5d246ef2c9ab29f33cf00a3af9a5
-                               | 2a18948c9a0419d4398134dddcd72367
-                               | 2c8e757e0e38a87f68e8eeb7bd306bf6
-                               | 352969216e1673edfa8d4ecf189043dc
-                               | 41894ce9a0721ed61db14d5e96e630d0
-                               | 54015dd9569256894ee29c103c64a732
-                               | 57baebe121bcd5ab9752dd63f60ecd81
-                               | 76401bdaab660d4ee5679df3c1732309
-                               | 94f54ec9f5fecf733f0d27b87e5a6c29
-                               | a89257469792a846e8db72edd6d29919
-                               | a8eca141eda7464bc7c12f3607f5511c
-                               | c79a35d2f9633bce58f66b0f1549f4d3
-                               | c9da54d8761c2a35f6b93cad4e5f6eac
-                               | dd86be82414adad88ada72e791c2fee5
-                               | fab8a718f7e3a1ff9c9d04fb4e8c94c4
-                               | fd3f270edda79575343e910369b75ab7
-                                ) \s }xms
-      ) {
-        $local_is_default = 1;
-    }
-
-    if (
-           $md5_easy
-        && $md5_easy =~ m{ \A (
+        defined $md5_easy
+        and $md5_easy =~ m{ \A (
                                   350e47b97efd4b75563837b6b3502d71
+                                | 436a6863b1a1ec3bb7607066beca7356
                                 | 5818611cb4c0bf4086806aced5669f25
                                 | 600ff436e5939656a5645c6139cc0228
                                 | 657d59cc9627d30a95d0b84ef4245185
@@ -5571,9 +5541,11 @@ sub check_for_rpm_overrides {
     }
 
     if (
-           $md5_cloud
-        && $md5_cloud =~ m{ \A (
-                                  956e6d177a790389572c7fcc8b33f8c5
+        defined $md5_cloud
+        and $md5_cloud =~ m{ \A (
+                                  23b40252dc77a775d00c87b89a64621a
+                                | 956e6d177a790389572c7fcc8b33f8c5
+                                | a33f5a902bbadebd7b3029e0337fde35
                                 | cf40c6ac1543464a937b8c39c4ad1da6
                                 ) \s }xms
       ) {
@@ -5581,51 +5553,73 @@ sub check_for_rpm_overrides {
     }
 
     opendir( my $dir_fh, $rpm_override_dir );
-    my @dir_contents = grep { !/^\.\.?$/ } readdir $dir_fh;
+    my @dir_contents = grep { !/^(?:\.\.?|local.versions)$/ } readdir $dir_fh;
     closedir $dir_fh;
-
-    if ( $local_is_default == 1 ) {
-        @dir_contents = grep { $_ ne 'local.versions' } @dir_contents;
-    }
-
     if ( $easy_is_default == 1 ) {
         @dir_contents = grep { $_ ne 'easy.versions' } @dir_contents;
     }
-
     if ( $cloud_is_default == 1 ) {
         @dir_contents = grep { $_ ne 'cloudlinux.versions' } @dir_contents;
     }
+    if (@dir_contents) {
+        print_warn( $rpm_override_dir . ': ' );
+        print_warning( '[ ' . join( ' ', @dir_contents ) . ' ] may contain custom entries, manually verify. More info: http://go.cpanel.net/rpmversions' );
+    }
 
-    ## if the only items in rpm.versions.d/ were defaults that we can ignore, return
-    return unless @dir_contents;
+    return unless -s $local_versions;
+    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
+    if ($@) {
+        print_warn('YAML::Syck: ');
+        print_warning('failed to load -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl');
+    }
 
-    print_warn('RPM override: ');
-    print_warning("$rpm_override_dir contains custom entries, manually review. More info: http://go.cpanel.net/rpmversions");
-
-    return unless -r $local_versions;
-
-    my %ignore_package = (
-        'easy-tomcat7' => 'uninstalled'    # easy-tomcat7 is often shown uninstalled, which is OK
-    );
+    my $ignore = {
+        'target_settings' => {
+            'clamav'       => '(?:un)?installed',
+            'easy-tomcat7' => '(?:un)?installed',
+            'munin'        => '(?:un)?installed',
+        },
+    };
+    if ( i_am('dnsonly') ) {
+        $ignore->{'target_settings'}->{'mailman'} = 'uninstalled';
+    }
     if ( cpanel_version_is(qw( >= 11.61.0.0 )) ) {
-        $ignore_package{'perl522'} = 'uninstalled';    # Normal for WHM 62 upgrade process
+        $ignore->{'target_settings'}->{'perl522'} = 'uninstalled';    # Normal for WHM 62 upgrade process
     }
     if ( cpanel_version_is(qw( >= 11.69.0.0 )) ) {
-        $ignore_package{'perl524'} = 'uninstalled';    # Normal for WHM 70 upgrade process
+        $ignore->{'target_settings'}->{'perl524'} = 'uninstalled';    # Normal for WHM 70 upgrade process
     }
 
-    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
-    return if $@;
-
-    my $ref = YAML::Syck::LoadFile($local_versions);
-    if ( $ref && exists $ref->{'target_settings'} ) {
-        foreach my $package ( keys %{ $ref->{'target_settings'} } ) {
-            next if exists $ignore_package{$package} && $ref->{'target_settings'}{$package} =~ m{$ignore_package{$package}};
-            if ( $ref->{'target_settings'}{$package} =~ m{(uninstalled|unmanaged)} ) {
-                print_warn($package);
-                print_warning( " is listed as " . $1 . " in " . $local_versions );
+    my $ref;
+    eval { $ref = YAML::Syck::LoadFile($local_versions); };
+    if ( defined $ref ) {
+        if ( not defined $ref->{'file_format'} or not defined $ref->{'file_format'}->{'version'} ) {
+            print_warn( $local_versions . ': ' );
+            print_warning('file version is missing!');
+        }
+        else {
+            if ( $ref->{'file_format'}->{'version'} ne $expected_file_version ) {
+                print_warn( $local_versions . ': ' );
+                print_warning( 'file version is ' . $ref->{'file_format'}->{'version'} . ', expected version ' . $expected_file_version . '!' );
             }
         }
+        if ( exists $ref->{'target_settings'} ) {
+            foreach my $package ( sort keys %{ $ref->{'target_settings'} } ) {
+                next if exists $ignore->{'target_settings'}->{$package} and $ref->{'target_settings'}{$package} =~ m{ \A $ignore->{'target_settings'}->{$package} \Z }xms;
+                print_warn( $local_versions . ': ' );
+                print_warning( $package . ' is configured as ' . $ref->{'target_settings'}{$package} );
+            }
+        }
+        for my $section (qw( install_targets rpm_groups rpm_locations srpm_sub_packages srpm_versions url_templates )) {
+            if ( exists $ref->{$section} and scalar keys %{ $ref->{$section} } ) {
+                print_warn( $local_versions . ': ' );
+                print_warning( 'Custom ' . $section . ' exists for: [ ' . join( ' ', sort keys %{ $ref->{$section} } ) . ' ]' );
+            }
+        }
+    }
+    else {
+        print_warn( $local_versions . ': ' );
+        print_warning('YAML not successfully imported, corrupted file?');
     }
 }
 
