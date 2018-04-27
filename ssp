@@ -35,7 +35,7 @@ use Getopt::Long();
 use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.185';
+our $VERSION = '4.99.186';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
@@ -197,8 +197,8 @@ sub run {
     check_for_hacked_server_touchfile();
     check_for_multiple_tech_logins();
     check_for_lve_environment();
+    check_for_systemd();
     check_for_os_release_5();
-    check_for_os_release_7();
     check_for_os_release_32bit();
     check_for_ea3();
 
@@ -273,6 +273,7 @@ sub run {
     check_for_sneaky_htaccess();
     check_ea4_paths_conf();
     check_apache_modules();
+    check_apache_niceness();
     check_perl_sanity();
     check_for_non_default_permissions();
     check_for_non_default_file_capabilities();
@@ -395,6 +396,7 @@ sub run {
     check_for_cron_allow();
     check_for_dev_sandbox();
     check_for_jail_owner();
+    check_sshd_config();
 
     # [3RDP]
     check_smtp_processes();
@@ -816,10 +818,10 @@ sub get_process_pid_href {
     # Tested on CentOS 5 through 7.
     # 'ps' is horrible at providing reliably-parseable output.  This is probably as close as we can get.
     # etimes field doesn't exist until CentOS 7 but can be derived from etime.
-    my $field_separator = '#^#';                                                # Any sequence unlikely to occur in normal ps output.  ps will also pad everything with spaces.
-    my $ps_format_opt   = join( $field_separator, qw( %p %P %U %t %c %a ) );    # like 'pid#^#ppid#^#user#^#etime#^#comm#^#args'
+    my $field_separator = '#^#';                                                   # Any sequence unlikely to occur in normal ps output.  ps will also pad everything with spaces.
+    my $ps_format_opt   = join( $field_separator, qw( %p %P %U %t %n %c %a ) );    # like 'pid#^#ppid#^#user#^#etime#^#nice#^#comm#^#args'
     my %hash            = map {
-        my ( $pid, $ppid, $user, $etime, $comm, $args ) = split /\s*\Q$field_separator\E\s*/, $_;
+        my ( $pid, $ppid, $user, $etime, $nice, $comm, $args ) = split /\s*\Q$field_separator\E\s*/, $_;
         $pid =~ s/^\s+//;
         $args =~ s/\s+$//;
         my ( $sec, $min, $hou, $day ) = reverse split( /[:-]/, $etime );
@@ -831,6 +833,7 @@ sub get_process_pid_href {
             'PPID'  => defined $ppid  ? $ppid  : '',
             'USER'  => defined $user  ? $user  : '',
             'ETIME' => defined $etime ? $etime : '',
+            'NICE'  => defined $nice  ? $nice  : '0',
             'COMM'  => defined $comm  ? $comm  : '',
             'ARGS'  => defined $args  ? $args  : '',
             'ETIMES' => $sec,
@@ -1314,17 +1317,17 @@ sub get_lsws_version {
     return ( $lsws_full_version, $lsws_numeric_version );
 }
 
+sub check_for_systemd {
+    return unless ( -e '/usr/bin/systemctl' or -e '/bin/systemctl' ) and ( -e '/usr/lib/systemd/systemd' or -e '/lib/systemd/systemd' );    # Don't assume /bin or /lib symlinks to /usr are in place
+    print_crit('Systemd: ');
+    print_critical('Use /scripts/restartsrv_* (preferred) or systemctl to restart services -- never use /etc/init.d scripts.');
+}
+
 sub check_for_os_release_5 {
     return unless os_version_is(qw( < 6 ));
     print_crit('CentOS/RHEL/CL 5 (or older): ');
     print_critical('This operating system is not supported in WHM 58 and later (OS version 6+ only).');
     print_critical('         \_ Send customer this premade: "MIGRATION - CentOS/RHEL/CL 5 EOL"');
-}
-
-sub check_for_os_release_7 {
-    return unless os_version_is(qw( >= 7 ));
-    print_crit('CentOS/RHEL/CL 7+: ');
-    print_critical('Use /scripts/restartsrv to restart services, not /etc/init.d scripts.');
 }
 
 sub check_for_os_release_32bit {
@@ -2928,6 +2931,23 @@ sub check_apache_modules {
     }
 }
 
+sub check_apache_niceness {
+    return unless my $httpd_bin = find_httpd_bin();
+    return unless my %procs = grep_process_cmd( qr{ $httpd_bin }xms, 'root' );
+    my $apache_nice;
+    for my $pid ( keys %procs ) {
+        if ( $procs{$pid}->{'NICE'} ne '0' ) {
+            $apache_nice = $procs{$pid}->{'NICE'};
+            last;
+        }
+    }
+    if ($apache_nice) {
+        my $moreinfo = $apache_nice eq '18' ? ' - See CPANEL-20037 for a possible cause.' : '';
+        print_warn('Apache: ');
+        print_warning( 'has been nice\'d (' . $apache_nice . ')! - May result in Apache performance issues.' . $moreinfo );
+    }
+}
+
 sub check_perl_sanity {
     return unless i_am('cpanel');
     my $usr_bin_perl       = '/usr/bin/perl';
@@ -3586,7 +3606,7 @@ sub check_for_hooks_in_scripts_directory {
         print_warning('/usr/local/cpanel/Cpanel/CustomEventHandler.pm exists!');
     }
 
-    # default CloudLinux, cPGs hooks that can be ignored
+    # These md5sums are DEPRECATED and will be removed after a transitional period.  Use the string white-list instead.
     my %hooks_ignore = qw(
       3035bcfdf629b8494bcd3dc933e97f30  /scripts/postkillacct
       4988be925a6f50ec505618a7cec702e2  /scripts/postkillacct
@@ -3628,7 +3648,7 @@ sub check_for_hooks_in_scripts_directory {
     my @hooks;
     if ( -d '/scripts' ) {
         opendir( my $scripts_fh, '/scripts' );
-        @hooks = grep { /^(pre|post)/ } readdir $scripts_fh;
+        @hooks = sort grep { /^(pre|post)/ } readdir $scripts_fh;
         closedir $scripts_fh;
     }
 
@@ -3641,23 +3661,84 @@ sub check_for_hooks_in_scripts_directory {
     # EA3 stuff checked elsewhere
     @hooks = grep { !/easyapache/ } @hooks;
 
-    my $hooks_output;
-    if (@hooks) {
-        for my $hook (@hooks) {
-            $hook = '/scripts/' . $hook;
-            chomp( my $checksum = timed_run( 0, 'md5sum', $hook ) );
-            $checksum =~ s/\s.*//g;
-            next if exists $hooks_ignore{$checksum};
+    my @custom_hooks;
+    my $comment_pattern = '\s*(?:\#.*)?';
+    my $cl_post_pattern = '(?:\.(?:pl|py|sh))?(?:\s+"\$@")?';
 
-            if ( !-z $hook ) {
-                $hooks_output .= " $hook ";
+    for my $hook (@hooks) {
+        my $hook_file = '/scripts/' . $hook;
+        next if -z $hook_file;
+
+        if ( open my $hook_fd, '<', $hook_file ) {    ## no critic (BriefOpen)
+            my $is_custom;
+            my $first_line = readline $hook_fd;
+            if ( $first_line and $first_line !~ m{ \A #!/bin/bash $comment_pattern \Z }xms ) {
+                $is_custom = 1;
+            }
+            while (<$hook_fd>) {
+                next if m{ \A $comment_pattern \Z }xms;
+
+                if ( i_am('cloudlinux') ) {
+                    next if m{ \A
+                       (
+                         \Q/usr/share/cagefs/cpanel/cagefs_\E $hook \Q_hook\E $cl_post_pattern
+                       | \Q/usr/share/l.v.e-manager/cpanel/hooks/\E (lve|l\.v\.e-) \Qmanager_\E $hook \Q_hook\E $cl_post_pattern
+                       | \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
+                       )
+                       $comment_pattern
+                       \Z }xms;
+                    if ( $hook eq 'postrestoreacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cagefs/cpanel/cagefs_postwwwacct_hook.pl\E \s+ user \s+ \"\$1\"
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'postkillacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'postupcp' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cloudlinux-linksafe/cpanel/hooks/cloudlinux_linksafe_hook.sh\E
+                        | \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                    if ( $hook eq 'prekillacct' ) {
+                        next if m{ \A
+                        (
+                          \Q/usr/share/cagefs-plugins/hooks/terminate_cagefs_account\E $cl_post_pattern
+                        ) $comment_pattern
+                        \Z }xms;
+                    }
+                }
+                $is_custom = 1;
+            }
+            close $hook_fd;
+
+            if ($is_custom) {
+                if ( i_am('cloudlinux') ) {
+                    chomp( my $checksum = timed_run( 0, 'md5sum', $hook_file ) );
+                    $checksum =~ s/\s.*//g;
+                    if ( exists $hooks_ignore{$checksum} ) {
+                        print_info('Hooks: ');
+                        print_warning("$hook_file matched md5sum, but did not match string whitelist. Please notify SSP developer or create a new TECH case and provide a copy of this hook file.");
+                        next;
+                    }
+                }
+                push @custom_hooks, $hook_file;
             }
         }
     }
 
-    if ($hooks_output) {
+    if ( scalar @custom_hooks ) {
         print_warn('Hooks: ');
-        print_warning($hooks_output);
+        print_warning( join( ' ', @custom_hooks ) );
     }
 }
 
@@ -5445,19 +5526,14 @@ sub check_for_rpm_overrides {
     my $rpm_override_dir = '/var/cpanel/rpm.versions.d/';
     return unless -d $rpm_override_dir;
 
-    my $local_versions = '/var/cpanel/rpm.versions.d/local.versions';
-    my $easy_versions  = '/var/cpanel/rpm.versions.d/easy.versions';
-    my $cloud_versions = '/var/cpanel/rpm.versions.d/cloudlinux.versions';
-    my $md5_local;
+    my $expected_file_version = '2';
+    my $local_versions        = $rpm_override_dir . 'local.versions';
+    my $easy_versions         = $rpm_override_dir . 'easy.versions';
+    my $cloud_versions        = $rpm_override_dir . 'cloudlinux.versions';
     my $md5_easy;
     my $md5_cloud;
-    my $local_is_default = 0;
     my $easy_is_default  = 0;
     my $cloud_is_default = 0;
-
-    if ( -f $local_versions ) {
-        $md5_local = timed_run( 0, 'md5sum', $local_versions );
-    }
 
     if ( -f $easy_versions ) {
         $md5_easy = timed_run( 0, 'md5sum', $easy_versions );
@@ -5469,35 +5545,10 @@ sub check_for_rpm_overrides {
 
     ## these are checksums for default files. we ignore them to prevent needless output from SSP
     if (
-           $md5_local
-        && $md5_local =~ m{ \A (
-                                 12f23aecb8622647469273aa00c2bf63
-                               | 1311deca9b898350d3660f6ea381af4b
-                               | 1d9f5d246ef2c9ab29f33cf00a3af9a5
-                               | 2a18948c9a0419d4398134dddcd72367
-                               | 2c8e757e0e38a87f68e8eeb7bd306bf6
-                               | 352969216e1673edfa8d4ecf189043dc
-                               | 41894ce9a0721ed61db14d5e96e630d0
-                               | 54015dd9569256894ee29c103c64a732
-                               | 57baebe121bcd5ab9752dd63f60ecd81
-                               | 76401bdaab660d4ee5679df3c1732309
-                               | 94f54ec9f5fecf733f0d27b87e5a6c29
-                               | a89257469792a846e8db72edd6d29919
-                               | a8eca141eda7464bc7c12f3607f5511c
-                               | c79a35d2f9633bce58f66b0f1549f4d3
-                               | c9da54d8761c2a35f6b93cad4e5f6eac
-                               | dd86be82414adad88ada72e791c2fee5
-                               | fab8a718f7e3a1ff9c9d04fb4e8c94c4
-                               | fd3f270edda79575343e910369b75ab7
-                                ) \s }xms
-      ) {
-        $local_is_default = 1;
-    }
-
-    if (
-           $md5_easy
-        && $md5_easy =~ m{ \A (
+        defined $md5_easy
+        and $md5_easy =~ m{ \A (
                                   350e47b97efd4b75563837b6b3502d71
+                                | 436a6863b1a1ec3bb7607066beca7356
                                 | 5818611cb4c0bf4086806aced5669f25
                                 | 600ff436e5939656a5645c6139cc0228
                                 | 657d59cc9627d30a95d0b84ef4245185
@@ -5510,9 +5561,11 @@ sub check_for_rpm_overrides {
     }
 
     if (
-           $md5_cloud
-        && $md5_cloud =~ m{ \A (
-                                  956e6d177a790389572c7fcc8b33f8c5
+        defined $md5_cloud
+        and $md5_cloud =~ m{ \A (
+                                  23b40252dc77a775d00c87b89a64621a
+                                | 956e6d177a790389572c7fcc8b33f8c5
+                                | a33f5a902bbadebd7b3029e0337fde35
                                 | cf40c6ac1543464a937b8c39c4ad1da6
                                 ) \s }xms
       ) {
@@ -5520,51 +5573,73 @@ sub check_for_rpm_overrides {
     }
 
     opendir( my $dir_fh, $rpm_override_dir );
-    my @dir_contents = grep { !/^\.\.?$/ } readdir $dir_fh;
+    my @dir_contents = grep { !/^(?:\.\.?|local.versions)$/ } readdir $dir_fh;
     closedir $dir_fh;
-
-    if ( $local_is_default == 1 ) {
-        @dir_contents = grep { $_ ne 'local.versions' } @dir_contents;
-    }
-
     if ( $easy_is_default == 1 ) {
         @dir_contents = grep { $_ ne 'easy.versions' } @dir_contents;
     }
-
     if ( $cloud_is_default == 1 ) {
         @dir_contents = grep { $_ ne 'cloudlinux.versions' } @dir_contents;
     }
+    if (@dir_contents) {
+        print_warn( $rpm_override_dir . ': ' );
+        print_warning( '[ ' . join( ' ', @dir_contents ) . ' ] may contain custom entries, manually verify. More info: http://go.cpanel.net/rpmversions' );
+    }
 
-    ## if the only items in rpm.versions.d/ were defaults that we can ignore, return
-    return unless @dir_contents;
+    return unless -s $local_versions;
+    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
+    if ($@) {
+        print_warn('YAML::Syck: ');
+        print_warning('failed to load -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl');
+    }
 
-    print_warn('RPM override: ');
-    print_warning("$rpm_override_dir contains custom entries, manually review. More info: http://go.cpanel.net/rpmversions");
-
-    return unless -r $local_versions;
-
-    my %ignore_package = (
-        'easy-tomcat7' => 'uninstalled'    # easy-tomcat7 is often shown uninstalled, which is OK
-    );
+    my $ignore = {
+        'target_settings' => {
+            'clamav'       => '(?:un)?installed',
+            'easy-tomcat7' => '(?:un)?installed',
+            'munin'        => '(?:un)?installed',
+        },
+    };
+    if ( i_am('dnsonly') ) {
+        $ignore->{'target_settings'}->{'mailman'} = 'uninstalled';
+    }
     if ( cpanel_version_is(qw( >= 11.61.0.0 )) ) {
-        $ignore_package{'perl522'} = 'uninstalled';    # Normal for WHM 62 upgrade process
+        $ignore->{'target_settings'}->{'perl522'} = 'uninstalled';    # Normal for WHM 62 upgrade process
     }
     if ( cpanel_version_is(qw( >= 11.69.0.0 )) ) {
-        $ignore_package{'perl524'} = 'uninstalled';    # Normal for WHM 70 upgrade process
+        $ignore->{'target_settings'}->{'perl524'} = 'uninstalled';    # Normal for WHM 70 upgrade process
     }
 
-    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
-    return if $@;
-
-    my $ref = YAML::Syck::LoadFile($local_versions);
-    if ( $ref && exists $ref->{'target_settings'} ) {
-        foreach my $package ( keys %{ $ref->{'target_settings'} } ) {
-            next if exists $ignore_package{$package} && $ref->{'target_settings'}{$package} =~ m{$ignore_package{$package}};
-            if ( $ref->{'target_settings'}{$package} =~ m{(uninstalled|unmanaged)} ) {
-                print_warn($package);
-                print_warning( " is listed as " . $1 . " in " . $local_versions );
+    my $ref;
+    eval { $ref = YAML::Syck::LoadFile($local_versions); };
+    if ( defined $ref ) {
+        if ( not defined $ref->{'file_format'} or not defined $ref->{'file_format'}->{'version'} ) {
+            print_warn( $local_versions . ': ' );
+            print_warning('file version is missing!');
+        }
+        else {
+            if ( $ref->{'file_format'}->{'version'} ne $expected_file_version ) {
+                print_warn( $local_versions . ': ' );
+                print_warning( 'file version is ' . $ref->{'file_format'}->{'version'} . ', expected version ' . $expected_file_version . '!' );
             }
         }
+        if ( exists $ref->{'target_settings'} ) {
+            foreach my $package ( sort keys %{ $ref->{'target_settings'} } ) {
+                next if exists $ignore->{'target_settings'}->{$package} and $ref->{'target_settings'}->{$package} =~ m{ \A $ignore->{'target_settings'}->{$package} \Z }xms;
+                print_warn( $local_versions . ': ' );
+                print_warning( $package . ' is configured as ' . $ref->{'target_settings'}->{$package} );
+            }
+        }
+        for my $section (qw( install_targets rpm_groups rpm_locations srpm_sub_packages srpm_versions url_templates )) {
+            if ( exists $ref->{$section} and scalar keys %{ $ref->{$section} } ) {
+                print_warn( $local_versions . ': ' );
+                print_warning( 'Custom ' . $section . ' exists for: [ ' . join( ' ', sort keys %{ $ref->{$section} } ) . ' ]' );
+            }
+        }
+    }
+    else {
+        print_warn( $local_versions . ': ' );
+        print_warning('YAML not successfully imported, corrupted file?');
     }
 }
 
@@ -7871,6 +7946,67 @@ sub get_printable_rpm_packages {
 sub get_openssl_rpm_changelog_sref {
     my $changelog = timed_run( 0, qw( rpm -q --changelog openssl ) );
     return \$changelog;
+}
+
+sub get_flat_conf_href {
+
+    # Import an unstructured, commented config file delimited by whitespace, equal, or colon after a single keyword.
+    # Hash keys are stored lowercase if $lower_key is true (only use when configuration keywords are case-insensitive!)
+    # The original keyword case is stored in array position 0, and the value is stored in array position 1.
+    # Should work for sshd_config with $lowercase=1, cpanel.config and php.ini with $lowercase=0, etc.
+    # This does not work for configuration keywords that can be used multiple times, only the last keyword found will be stored.
+    my ( $file, $lower_key ) = @_;
+    return unless defined $file;
+    return unless -e $file;
+    my %conf;
+    open my $fh, '<', $file or return;
+    while ( my $line = <$fh> ) {
+        next if $line =~ m{ \A \s* ( [;#] | \s* \Z ) }xms;    # Ignore comments prefixed by hash or semicolon, or empty lines
+        my ( $key, $value ) = split( /\s*[\s=:]\s*/, $line, 2 );    # Split on whitespace, =, or :.  Ignore additional whitespace.
+        next unless defined $key;
+        $key =~ s{ \A \s+ | \s+ \Z }{}gxms;                         # Strip leading/trailing whitespace
+        $key =~ s{ \A ['"] | ['"] \Z }{}gxms;                       # Strip leading/trailing quotes
+        if ( defined $value ) {
+            $value =~ s{ \A \s+ | \s+ \Z }{}gxms;
+            $value =~ s{ \A ['"] | ['"] \Z }{}gxms;
+        }
+        $conf{ $lower_key ? lc($key) : $key } = [ $key, $value ];
+    }
+    close $fh;
+    return \%conf;
+}
+
+sub check_sshd_config {
+    return unless i_am_one_of( 'cpanel', 'dnsonly' );
+    my $sshd_config = '/etc/ssh/sshd_config';
+    return unless my $conf = get_flat_conf_href( $sshd_config, 1 );
+
+    # Example: 'lowercaseoption' => { default => 'lowercasedefaultvalue', check_missing => 1, orig_name => 'MixedCaseName', help => 'Help text' },
+    # default, check_missing, and help are optional, but orig_name should be defined if check_missing is used so that the mixed-case name can be printed
+    # If check_missing exists, a warning is generated if the item is NOT in sshd_conf and does not match the default (if given)
+    my %checks;
+    if ( not -e '/etc/cphulkddisable' ) {
+        $checks{'usedns'} = { default => 'no',  check_missing => 1, orig_name => 'UseDNS', help => 'UseDNS must be explicitly disabled for cPHulk to work correctly for SSH logins' };
+        $checks{'usepam'} = { default => 'yes', check_missing => 1, orig_name => 'UsePAM', help => 'UsePAM must be explicitly enabled for cPHulk and/or CageFS to process SSH logins' };
+    }
+
+    for my $lc_key ( sort( keys(%checks) ) ) {
+        my $check         = $checks{$lc_key};
+        my $lc_default    = defined $check->{default} ? $check->{default} : '';
+        my $check_missing = defined $check->{check_missing} ? 1 : 0;
+        my $missing_name  = defined $check->{orig_name} ? $check->{orig_name} : $lc_key;
+        my $help          = defined $check->{help} ? '- ' . $check->{help} : '';
+        my ( $conf_key, $conf_value ) = defined $conf->{$lc_key} ? @{ $conf->{$lc_key} } : undef;
+        my $lc_conf_value = defined $conf_value ? lc($conf_value) : undef;
+        if ( defined $lc_conf_value and $lc_conf_value ne $lc_default ) {
+            print_warn( $sshd_config . ': ' );
+            print_warning("[ $conf_key $conf_value ] $help");
+        }
+        elsif ( $check_missing and not defined $conf_value ) {
+            print_warn( $sshd_config . ': ' );
+            print_warning("[ $missing_name ] not found $help");
+        }
+    }
 }
 
 sub check_pure_ftpd_conf_for_upload_script_and_dead {
