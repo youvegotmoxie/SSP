@@ -3664,6 +3664,7 @@ sub check_for_hooks_in_scripts_directory {
                        (
                          \Q/usr/share/cagefs/cpanel/cagefs_\E $hook \Q_hook\E $cl_post_pattern
                        | \Q/usr/share/l.v.e-manager/cpanel/hooks/\E (lve|l\.v\.e-) \Qmanager_\E $hook \Q_hook\E $cl_post_pattern
+                       | \Q/usr/share/lve/dbgovernor/cpanel/upgrade-mysql-disabler.sh\E
                        )
                        $comment_pattern
                        \Z }xms;
