@@ -273,6 +273,7 @@ sub run {
     check_for_sneaky_htaccess();
     check_ea4_paths_conf();
     check_apache_modules();
+    check_apache_niceness();
     check_perl_sanity();
     check_for_non_default_permissions();
     check_for_non_default_file_capabilities();
@@ -817,10 +818,10 @@ sub get_process_pid_href {
     # Tested on CentOS 5 through 7.
     # 'ps' is horrible at providing reliably-parseable output.  This is probably as close as we can get.
     # etimes field doesn't exist until CentOS 7 but can be derived from etime.
-    my $field_separator = '#^#';                                                # Any sequence unlikely to occur in normal ps output.  ps will also pad everything with spaces.
-    my $ps_format_opt   = join( $field_separator, qw( %p %P %U %t %c %a ) );    # like 'pid#^#ppid#^#user#^#etime#^#comm#^#args'
+    my $field_separator = '#^#';                                                   # Any sequence unlikely to occur in normal ps output.  ps will also pad everything with spaces.
+    my $ps_format_opt   = join( $field_separator, qw( %p %P %U %t %n %c %a ) );    # like 'pid#^#ppid#^#user#^#etime#^#nice#^#comm#^#args'
     my %hash            = map {
-        my ( $pid, $ppid, $user, $etime, $comm, $args ) = split /\s*\Q$field_separator\E\s*/, $_;
+        my ( $pid, $ppid, $user, $etime, $nice, $comm, $args ) = split /\s*\Q$field_separator\E\s*/, $_;
         $pid =~ s/^\s+//;
         $args =~ s/\s+$//;
         my ( $sec, $min, $hou, $day ) = reverse split( /[:-]/, $etime );
@@ -832,6 +833,7 @@ sub get_process_pid_href {
             'PPID'  => defined $ppid  ? $ppid  : '',
             'USER'  => defined $user  ? $user  : '',
             'ETIME' => defined $etime ? $etime : '',
+            'NICE'  => defined $nice  ? $nice  : '0',
             'COMM'  => defined $comm  ? $comm  : '',
             'ARGS'  => defined $args  ? $args  : '',
             'ETIMES' => $sec,
@@ -2926,6 +2928,23 @@ sub check_apache_modules {
             print_warn('Apache: ');
             print_warning( ' Loaded ' . $module . ' - ' . $help_text );
         }
+    }
+}
+
+sub check_apache_niceness {
+    return unless my $httpd_bin = find_httpd_bin();
+    return unless my %procs = grep_process_cmd( qr{ $httpd_bin }xms, 'root' );
+    my $apache_nice;
+    for my $pid ( keys %procs ) {
+        if ( $procs{$pid}->{'NICE'} ne '0' ) {
+            $apache_nice = $procs{$pid}->{'NICE'};
+            last;
+        }
+    }
+    if ($apache_nice) {
+        my $moreinfo = $apache_nice eq '18' ? ' - See CPANEL-20037 for a possible cause.' : '';
+        print_warn('Apache: ');
+        print_warning( 'has been nice\'d (' . $apache_nice . ')! - May result in Apache performance issues.' . $moreinfo );
     }
 }
 
