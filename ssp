@@ -4951,6 +4951,7 @@ sub check_cpanel_config {
         'mailserver'                  => { check_missing => 1 },
         'mysql-version'               => { check_missing => 1 },
         'nativessl'                   => { default       => '1',                 help => 'Native SSL support for WHM/cPanel services is disabled' },
+        'pma_disableis'               => { default       => '0',                 help => 'Can cause various issues with phpMyAdmin displaying databases -- see CPANEL-16866, CPANEL-16867, CPANEL-18742.' },
         'root'                        => { default       => '/usr/local/cpanel', help => 'An invalid root setting can cause WHM to fail to start.  See ticket 5463121.' },
         'skiphttpauth'                => { default       => '1',                 help => 'HTTP auth enabled' },
         'skipparentcheck'             => { default       => '0',                 help => 'Allows other applications to run the cPanel and admin binaries' },
