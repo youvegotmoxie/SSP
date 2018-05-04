@@ -2943,16 +2943,27 @@ sub check_apache_niceness {
     return unless my $httpd_bin = find_httpd_bin();
     return unless my %procs = grep_process_cmd( qr{ $httpd_bin }xms, 'root' );
     my $apache_nice;
-    for my $pid ( keys %procs ) {
-        if ( $procs{$pid}->{'NICE'} ne '0' ) {
-            $apache_nice = $procs{$pid}->{'NICE'};
-            last;
-        }
+    my $apache_ionice;
+    for my $pid ( sort keys %procs ) {
+        $apache_nice = $procs{$pid}->{'NICE'};
+        $apache_ionice = timed_run( 0, 'ionice', '-p', $pid );
+        chomp $apache_ionice;
+        last;
     }
-    if ($apache_nice) {
-        my $moreinfo = $apache_nice eq '18' ? ' - See CPANEL-20037 for a possible cause.' : '';
+
+    my $cp20037_nice         = '18';
+    my $cp20037_bw_ionice    = defined $CPCONF{'ionice_bandwidth_processing'} ? $CPCONF{'ionice_bandwidth_processing'} : '6';
+    my $cp20037_log_ionice   = defined $CPCONF{'ionice_log_processing'} ? $CPCONF{'ionice_log_processing'} : '7';
+    my $cp20037_ionice_regex = '\A best-effort: \s prio \s (?:' . $cp20037_bw_ionice . '|' . $cp20037_log_ionice . ') \Z';
+    my $cp20037info          = ' - See CPANEL-20037 for a possible cause.';                                                     # Make the text conditional on build version after CPANEL-20037 is published
+
+    if ( defined $apache_nice and not $apache_nice eq '0' ) {
         print_warn('Apache: ');
-        print_warning( 'has been nice\'d (' . $apache_nice . ')! - May result in Apache performance issues.' . $moreinfo );
+        print_warning( 'has unexpected nice value [ ' . $apache_nice . ' ] - May result in Apache performance issues' . ( $apache_nice eq $cp20037_nice ? $cp20037info : '' ) );
+    }
+    if ( defined $apache_ionice and not $apache_ionice =~ m{ \A (?:none|unknown): \s prio \s [04] \Z }xms ) {                   # "none: prio 0", "unknown: prio 0", "none: prio 4", "unknown: prio 4" all acceptable
+        print_warn('Apache: ');
+        print_warning( 'has unexpected ionice value [ ' . $apache_ionice . ' ] - May result in Apache performance issues' . ( $apache_ionice =~ m{ $cp20037_ionice_regex }xms ? $cp20037info : '' ) );
     }
 }
 
