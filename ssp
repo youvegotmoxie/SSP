@@ -35,7 +35,7 @@ use Getopt::Long();
 use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.186';
+our $VERSION = '4.99.187';
 
 # Global variables that alter application runtime
 our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
@@ -397,6 +397,8 @@ sub run {
     check_for_dev_sandbox();
     check_for_jail_owner();
     check_sshd_config();
+    check_for_saltstack();
+    check_for_puppet_agent();
 
     # [3RDP]
     check_smtp_processes();
@@ -7180,6 +7182,17 @@ sub check_updatelog {
     }
 }
 
+sub check_for_saltstack {
+    return unless exists_process_cmd( qr{ salt-minion }xms, 'root' );
+    print_warn('SaltStack Minion: ');
+    print_warning('the salt-minion process is running. Seeing files being reverted, this may be why' );
+}
+
+sub check_for_puppet_agent {
+    return unless exists_process_cmd( qr{ puppet }xms, 'root' );
+    print_warn('Puppet Agent: ');
+    print_warning('the puppet process is running. Seeing files being reverted, this may be why' );
+}
 ##############################
 #  END [WARN] CHECKS
 ##############################
@@ -7235,6 +7248,7 @@ sub check_for_nginx {
     print_3rdp('nginx: ');
     print_3rdp2('is running');
 }
+
 
 sub check_for_mailscanner {
     return unless i_am_one_of( 'ea4', 'ea3' );
