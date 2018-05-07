@@ -7191,7 +7191,7 @@ sub check_for_saltstack {
 sub check_for_puppet_agent {
     return unless exists_process_cmd( qr{ puppet }xms, 'root' );
     print_warn('Puppet Agent: ');
-    print_warning' the puppet process is running. Seeing files being reverted, this may be why' );
+    print_warning('the puppet process is running. Seeing files being reverted, this may be why' );
 }
 ##############################
 #  END [WARN] CHECKS
