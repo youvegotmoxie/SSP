@@ -32,16 +32,16 @@ use Time::Local qw{timelocal timegm};
 use IPC::Open3;
 use Cwd qw(abs_path);
 use Getopt::Long();
-use Data::Dumper();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.186';
+our $VERSION = '4.99.187';
 
 # Global variables that alter application runtime
-our $OPT_TIMEOUT;    # How long to wait for system commands to finish executing
+our $OPT_SKIP_NETWORKING;    # Disable network calls
+our $OPT_TIMEOUT;            # How long to wait for system commands to finish executing
 
 # Global variables updated throughout application
-our $CRIT_BUFFER;    # Critical output to be printed at the end
+our $CRIT_BUFFER;            # Critical output to be printed at the end
 
 # Things that are the same but used many places
 our $CPANEL_LICENSE_FILE = '/usr/local/cpanel/cpanel.lisc';
@@ -51,9 +51,9 @@ our $MYSQL_CONF_FILE     = '/etc/my.cnf';
 our $PURE_FTPD_CONF_FILE = '/etc/pure-ftpd.conf';
 
 # Global variables initialized at application initialization
-our %CPCONF;         # cpanel.config
+our %CPCONF;                 # cpanel.config
 our $ORIGINAL_PATH;
-our %SOCKET;         # Dispatcher for optional Socket module usage
+our %SOCKET;                 # Dispatcher for optional Socket module usage
 our $RUN_STATE;
 our $HTTP_GET_HOST_CACHE;
 our %MEMOIZE_CACHE;
@@ -82,6 +82,8 @@ sub init {
     # There is some memoize overhead, but it is a safe bet for anything with unpredictable runtimes (network, heavy disk I/O, external processes).
     _memoize(
         qw (
+          check_for_non_default_permissions
+          check_roots_cron_for_certain_commands
           find_httpd_bin
           get_apache_modules_href
           get_apache_version_href
@@ -99,6 +101,7 @@ sub init {
           get_license_info
           get_local_ipaddrs_aref
           get_lsof_port_href
+          get_lsws_version_aref
           get_meminfo
           get_mysql_conf_href
           get_mysql_full_version
@@ -157,6 +160,9 @@ sub run {
         'bugreport' => sub { init(); exit print_bug_report(); },
         'csi'       => sub { init(); exit csi_checks_only(); },
         'docreport' => sub { init(); exit print_doc_bug_report(); },
+        'no-network' => \$OPT_SKIP_NETWORKING,
+        'no-speed'   => sub { $MEMOIZE_CACHE{'PRECACHE'} = { disabled => 1 }; },
+        'profiling'  => sub { require Time::HiRes; $MEMOIZE_CACHE{'PROFILING'} = { enabled => 1 }; },
         'simulatestate=s@' => sub { _simulate_run_state( $_[1] ); },
         'simulatevar=s%'   => sub { _simulate_run_var( $_[1], $_[2] ); },
         'timeout=i' => \$OPT_TIMEOUT,
@@ -202,11 +208,11 @@ sub run {
     check_for_os_release_32bit();
     check_for_ea3();
 
-    print_start("Gathering some information, this may take a few moments...\n");
-
     find_httpd_bin();    # Cache result now, it is used by get_apache_* below.  The following must be memoized in init() first.
     _memoize_parallel_populate_cache(
         qw(
+          check_for_non_default_permissions
+          check_roots_cron_for_certain_commands
           get_apache_modules_href
           get_apache_version_href
           get_clock_skew
@@ -440,6 +446,7 @@ sub run {
         print $CRIT_BUFFER;
     }
 
+    print_profiling_data();
     return 0;
 }
 
@@ -467,10 +474,8 @@ sub all_malware_checks {
     check_sha1_sigs_ssh_add();
     check_sha1_sigs_sshd();
     check_for_ebury_ssh_G();
-    check_for_ebury_ssh_banner();
     check_for_ebury_ssh_shmem();
     check_for_ebury_root_file();
-    check_for_ebury_socket();
     check_for_bg_botnet();
     check_for_dragnet();
     check_for_xor_ddos();
@@ -1300,9 +1305,9 @@ sub check_for_lve_environment {
     }
 }
 
-sub get_lsws_version {
+sub get_lsws_version_aref {
     my $lshttpd = '/usr/local/lsws/bin/lshttpd';
-    return unless my @lshttpd_version_output = split /\n/, timed_run( 0, $lshttpd, '-v' );
+    return [] unless my @lshttpd_version_output = split /\n/, timed_run( 0, $lshttpd, '-v' );
     my ( $lsws_full_version, $lsws_numeric_version ) = ();
     for (@lshttpd_version_output) {
         if (m{ \A (LiteSpeed/(\d+(?:\.\d+){1,2}).*) }xms) {
@@ -1314,7 +1319,7 @@ sub get_lsws_version {
     $lsws_full_version    = "unknown" if !$lsws_full_version;
     $lsws_numeric_version = "unknown" if !$lsws_numeric_version;
 
-    return ( $lsws_full_version, $lsws_numeric_version );
+    return [ $lsws_full_version, $lsws_numeric_version ];
 }
 
 sub check_for_systemd {
@@ -1610,40 +1615,42 @@ sub print_apache_info {
         $apache_configured_port = $attempted_port;
     }
 
-    my $apache_status = _http_get( Host => '127.0.0.1', Port => $apache_configured_port, Path => '/whm-server-status' );
+    my $apache_status = _http_get( Host => '127.0.0.1', Port => $apache_configured_port, Path => '/whm-server-status', MultiHomed => 0, Timeout => 5 );
 
-    if ($apache_status) {
-        my @apache_status = split /\n/, $apache_status;
+    if ( not $OPT_SKIP_NETWORKING ) {
+        if ($apache_status) {
+            my @apache_status = split /\n/, $apache_status;
 
-        for my $line (@apache_status) {
-            if ( $line =~ m{ Server \s uptime: \s+ (.*) </dt> }xms ) {
-                $apache_uptime = 'Up ' . $1;
+            for my $line (@apache_status) {
+                if ( $line =~ m{ Server \s uptime: \s+ (.*) </dt> }xms ) {
+                    $apache_uptime = 'Up ' . $1;
+                }
+                if ( $line =~ m{ Parent \s Server \s Generation: (.*) </dt> }xms ) {
+                    $apache_generations = $1 . ' generation(s)';
+                }
             }
-            if ( $line =~ m{ Parent \s Server \s Generation: (.*) </dt> }xms ) {
-                $apache_generations = $1 . ' generation(s)';
-            }
-        }
-        $output .= ' [ ' . $apache_uptime . ' ]'      if defined $apache_uptime;
-        $output .= ' [ ' . $apache_generations . ' ]' if defined $apache_generations;
-    }
-    else {
-        my $warning = "";
-        if ( $apache_configured_port == 80 ) {
-            $warning = 'Is Apache up/slow to respond? (failed: http://127.0.0.1/whm-server-status). ';
+            $output .= ' [ ' . $apache_uptime . ' ]'      if defined $apache_uptime;
+            $output .= ' [ ' . $apache_generations . ' ]' if defined $apache_generations;
         }
         else {
-            $warning = 'Is Apache up/slow to respond? (failed: http://127.0.0.1:' . $apache_configured_port . '/whm-server-status). ';
-        }
-        my $ports = get_lsof_port_href();
-        if ( exists $ports->{'80'} ) {
-            $warning .= 'Something is listening on port 80.';
-        }
-        else {
-            $warning .= 'Nothing is listening on port 80';
-        }
+            my $warning = "";
+            if ( $apache_configured_port == 80 ) {
+                $warning = 'Is Apache up/slow to respond? (failed: http://127.0.0.1/whm-server-status). ';
+            }
+            else {
+                $warning = 'Is Apache up/slow to respond? (failed: http://127.0.0.1:' . $apache_configured_port . '/whm-server-status). ';
+            }
+            my $ports = get_lsof_port_href();
+            if ( exists $ports->{'80'} ) {
+                $warning .= 'Something is listening on port 80.';
+            }
+            else {
+                $warning .= 'Nothing is listening on port 80';
+            }
 
-        print_info('Apache: ');
-        print_warning($warning);
+            print_info('Apache: ');
+            print_warning($warning);
+        }
     }
 
     if ($output) {
@@ -1958,8 +1965,7 @@ sub print_backups_info {
     return unless i_am('cpanel');
     my $old_backup_conf = get_old_backup_conf_href();
     my $new_backup_conf = get_new_backup_conf_href();
-    use Data::Dumper;
-    my %new_dest = ();
+    my %new_dest        = ();
     my ( $new_backups_cron, $new_backups_status ) = ( 0, 'No Config' );
     my ( $old_backups_cron, $old_backups_status ) = ( 0, 'No Config' );
     my $warning        = 0;
@@ -2249,7 +2255,8 @@ sub check_for_custom_zonetemplates {
 
 sub print_lsws_info {
     return unless i_am('cpanel');
-    return unless my ( $lsws_full_version, $lsws_numeric_version ) = get_lsws_version();
+    return unless my ( $lsws_full_version, $lsws_numeric_version ) = @{ get_lsws_version_aref() };
+
     print_info('LiteSpeed Web Server: ');
     print_normal("version [ $lsws_full_version ]");
 
@@ -2282,11 +2289,11 @@ sub print_lsws_info {
 
 sub check_for_lsws_update {
     return unless i_am('cpanel');
-    return unless my ( $lsws_full_version, $lsws_numeric_version ) = get_lsws_version();
+    return unless my ( $lsws_full_version, $lsws_numeric_version ) = @{ get_lsws_version_aref() };
     return if $lsws_numeric_version eq "unknown";
     return unless $lsws_full_version =~ /Enterprise/;
 
-    my $reply = _http_get( Host => 'update.litespeedtech.com', Path => '/ws/latest.php' );
+    my $reply = _http_get( Host => 'update.litespeedtech.com', Path => '/ws/latest.php', MultiHomed => 0, Timeout => 5 );
     return unless defined $reply;
 
     my $available_lsws_version;
@@ -2504,6 +2511,7 @@ sub check_interface_lo {
 }
 
 sub check_loopback_connection {
+    return if $OPT_SKIP_NETWORKING;
     return unless i_am_one_of( 'cpanel', 'dnsonly' );
     my @ports     = qw( 25 80 2086 );
     my $connected = 0;
@@ -2869,7 +2877,7 @@ sub check_apache_modules {
     my $installed_modules = get_apache_modules_href();
     return unless scalar keys %{$installed_modules};
     my $apache_version = get_apache_version();
-    my ( $lsws_full_version, $lsws_numeric_version ) = get_lsws_version();
+    my ( $lsws_full_version, $lsws_numeric_version ) = @{ get_lsws_version_aref() };
 
     # Example: 'foo_module' => { help => [ 'Some help text.' ], check_missing => 1 }
     #      or: push @{ $check{'foo_module'}{'help'} }, 'More help text.';
@@ -2933,18 +2941,29 @@ sub check_apache_modules {
 
 sub check_apache_niceness {
     return unless my $httpd_bin = find_httpd_bin();
-    return unless my %procs = grep_process_cmd( qr{ $httpd_bin }xms, 'root' );
+    return unless my %procs = grep_process_cmd( qr{ $httpd_bin \s+ \-k }xms, 'root' );
     my $apache_nice;
-    for my $pid ( keys %procs ) {
-        if ( $procs{$pid}->{'NICE'} ne '0' ) {
-            $apache_nice = $procs{$pid}->{'NICE'};
-            last;
-        }
+    my $apache_ionice;
+    for my $pid ( sort keys %procs ) {
+        $apache_nice = $procs{$pid}->{'NICE'};
+        $apache_ionice = timed_run( 0, 'ionice', '-p', $pid );
+        chomp $apache_ionice;
+        last;
     }
-    if ($apache_nice) {
-        my $moreinfo = $apache_nice eq '18' ? ' - See CPANEL-20037 for a possible cause.' : '';
+    my $cp20037_nice         = '18';
+    my $cp20037_bw_ionice    = defined $CPCONF{'ionice_bandwidth_processing'} ? $CPCONF{'ionice_bandwidth_processing'} : '6';
+    my $cp20037_log_ionice   = defined $CPCONF{'ionice_log_processing'} ? $CPCONF{'ionice_log_processing'} : '7';
+    my $cp20037_ionice_regex = '\A best-effort: \s prio \s (?:' . $cp20037_bw_ionice . '|' . $cp20037_log_ionice . ') \Z';
+
+    my $cp20037info = ' - See CPANEL-20037 for a possible cause.';    # Make the text conditional on build version after CPANEL-20037 is published
+
+    if ($apache_nice) {                                               # Anything other than 0
         print_warn('Apache: ');
-        print_warning( 'has been nice\'d (' . $apache_nice . ')! - May result in Apache performance issues.' . $moreinfo );
+        print_warning( 'has unexpected nice value [ ' . $apache_nice . ' ] - May result in Apache performance issues' . ( $apache_nice eq $cp20037_nice ? $cp20037info : '' ) );
+    }
+    if ( $apache_ionice and not $apache_ionice =~ m{ \A (?:none|unknown): \s prio \s [04] \Z }xms ) {    # "none: prio 0", "unknown: prio 0", "none: prio 4", "unknown: prio 4" all acceptable
+        print_warn('Apache: ');
+        print_warning( 'has unexpected ionice value [ ' . $apache_ionice . ' ] - May result in Apache performance issues' . ( $apache_ionice =~ m{ $cp20037_ionice_regex }xms ? $cp20037info : '' ) );
     }
 }
 
@@ -3606,45 +3625,6 @@ sub check_for_hooks_in_scripts_directory {
         print_warning('/usr/local/cpanel/Cpanel/CustomEventHandler.pm exists!');
     }
 
-    # These md5sums are DEPRECATED and will be removed after a transitional period.  Use the string white-list instead.
-    my %hooks_ignore = qw(
-      3035bcfdf629b8494bcd3dc933e97f30  /scripts/postkillacct
-      4988be925a6f50ec505618a7cec702e2  /scripts/postkillacct
-      49e17847bdcb790fd30a1916427091b3  /scripts/postkillacct
-      28620050548a2e4b500ab7426aaa0df5  /scripts/postmodifyacct
-      42a624c843f34085f1532b0b4e17fe8c  /scripts/postmodifyacct
-      66c14efb37684262be9f5fe5c13baa15  /scripts/postmodifyacct
-      67cefa439c7ea3b1b7643ec739c60006  /scripts/postmodifyacct
-      423370856f0be1b80f39d28043d7d4f8  /scripts/postrestoreacct
-      0654757899ca7e348bdffef11e867e09  /scripts/postupcp
-      05b7f8b4f2c83f033d124479a1c3eca0  /scripts/postupcp
-      22cf7db1c069fd9672cd9dad3a3d371d  /scripts/postupcp
-      3fa559a9f0a4766c4219fa2c601d473d  /scripts/postupcp
-      50bfcdbca45dc5813b5b354ceb24d977  /scripts/postupcp
-      57f8ea2d494e299827cc365c86a357ac  /scripts/postupcp
-      6db9b6bfb975adbe908300cc802774a8  /scripts/postupcp
-      843f9a04ceed5d03dc34616b371abf06  /scripts/postupcp
-      941772daaa48999f1d5ae5fe2f881e36  /scripts/postupcp
-      95594156f1d7f4b9c88c1efe832ac03f  /scripts/postupcp
-      e464adf0531fea2af4fe57361d9a43fb  /scripts/postupcp
-      03a0dc919c892bde254c52cefe4d0673  /scripts/postwwwacct
-      2401d6260dac6215596be1652b394200  /scripts/postwwwacct
-      677da3bdd8fbd16d4b8917a9fe0f6f89  /scripts/postwwwacct
-      9de3100a4f39d98ae49449350af8928a  /scripts/postwwwacct
-      a4df04a6440073fe40363cfd241b1fe7  /scripts/postwwwacct
-      ca853c528aa3a30613753fd0d4d8c26f  /scripts/postwwwacct
-      d296b6bc92e8a60424c6e017219ddaf6  /scripts/postwwwacct
-      f293233e17d93d74b6a98c930237aa2e  /scripts/postwwwacct
-      2ff00926df02021ba10913aa5a5bc0ec  /scripts/prekillacct
-      44caf075fc0f9847ede43de5dd563edc  /scripts/prekillacct
-      46fee9faf2d5f83cbcda17ce0178a465  /scripts/prekillacct
-      677da3bdd8fbd16d4b8917a9fe0f6f89  /scripts/prekillacct
-      86f9b53c81a8f2fd77a8626ddd3b2c71  /scripts/prekillacct
-      88f73e4fd1384479e4069a68ae4e1489  /scripts/prekillacct
-      abee6662e56ba0b283423eccdef49ed7  /scripts/prekillacct
-      94a4366ea0417d2e4715dd968ddd94cb  /scripts/preupcp
-    );
-
     my @hooks;
     if ( -d '/scripts' ) {
         opendir( my $scripts_fh, '/scripts' );
@@ -3717,27 +3697,15 @@ sub check_for_hooks_in_scripts_directory {
                         \Z }xms;
                     }
                 }
-                $is_custom = 1;
+                push @custom_hooks, $hook_file;
+                last;
             }
             close $hook_fd;
-
-            if ($is_custom) {
-                if ( i_am('cloudlinux') ) {
-                    chomp( my $checksum = timed_run( 0, 'md5sum', $hook_file ) );
-                    $checksum =~ s/\s.*//g;
-                    if ( exists $hooks_ignore{$checksum} ) {
-                        print_info('Hooks: ');
-                        print_warning("$hook_file matched md5sum, but did not match string whitelist. Please notify SSP developer or create a new TECH case and provide a copy of this hook file.");
-                        next;
-                    }
-                }
-                push @custom_hooks, $hook_file;
-            }
         }
     }
 
     if ( scalar @custom_hooks ) {
-        print_warn('Hooks: ');
+        print_warn('Custom Hooks: ');
         print_warning( join( ' ', @custom_hooks ) );
     }
 }
@@ -4572,12 +4540,13 @@ sub check_for_apache_rlimits {
 
     if ( open my $httpdconf_fh, '<', $httpdconf ) {
         while (<$httpdconf_fh>) {
-            if (m/\A \s* RLimitMEM \s+ (\d+)/xi) {
+            if (m{\A \s* RLimitMEM \s+ (\d+)}xmsi) {
                 $rlimitmem = $1;
             }
-            if (m/\A \s* RLimitCPU \s+ (\d+)/xi) {
+            if (m{\A \s* RLimitCPU \s+ (\d+)}xmsi) {
                 $rlimitcpu = $1;
             }
+            last if m{\A \s* <VirtualHost}xmsi;
         }
         close $httpdconf_fh;
     }
@@ -4692,6 +4661,7 @@ sub check_etc_hosts_sanity {
 }
 
 sub check_localhost_resolution {
+    return if $OPT_SKIP_NETWORKING;
 
     # At this time we only require localhost to resolve to "127.0.0.1", but "::1" is accounted for
     my $print_check;
@@ -4743,6 +4713,7 @@ sub check_localhost_resolution {
 
 sub _resolve {
     my ( $addr, $report_errors, $timeout ) = @_;
+    return if $OPT_SKIP_NETWORKING;
     $report_errors = ( defined $report_errors && $report_errors ne "0" ) ? 1 : 0;
     $timeout = defined $timeout ? $timeout : 3;
     my @results;
@@ -4991,6 +4962,7 @@ sub check_cpanel_config {
         'mailserver'                  => { check_missing => 1 },
         'mysql-version'               => { check_missing => 1 },
         'nativessl'                   => { default       => '1',                 help => 'Native SSL support for WHM/cPanel services is disabled' },
+        'pma_disableis'               => { default       => '0',                 help => 'Can cause various issues with phpMyAdmin displaying databases -- see CPANEL-16866, CPANEL-16867, CPANEL-18742.' },
         'root'                        => { default       => '/usr/local/cpanel', help => 'An invalid root setting can cause WHM to fail to start.  See ticket 5463121.' },
         'skiphttpauth'                => { default       => '1',                 help => 'HTTP auth enabled' },
         'skipparentcheck'             => { default       => '0',                 help => 'Allows other applications to run the cPanel and admin binaries' },
@@ -5073,9 +5045,9 @@ sub check_for_custom_exim_conf_local {
 sub check_for_maxclients_or_maxrequestworkers_reached {
     return unless i_am_one_of( 'ea4', 'ea3' );
     return unless my $apache_version = get_apache_version();
-    my $log            = '/usr/local/apache/logs/error_log';
+    my $log            = i_am('ea4') ? '/etc/apache2/logs/error_log' : '/usr/local/apache/logs/error_log';
     my $size           = ( stat($log) )[7];
-    my $bytes_to_check = 20_971_520 / 2;                       # 10M limit of logs to check, may need adjusting, depending how much time it adds to SSP
+    my $bytes_to_check = 20_971_520 / 2;                                                                     # 10M limit of logs to check, may need adjusting, depending how much time it adds to SSP
     my $seek_position  = 0;
     my $log_data;
     my @logs;
@@ -5092,37 +5064,35 @@ sub check_for_maxclients_or_maxrequestworkers_reached {
         read $file_fh, $log_data, $bytes_to_check;
         close $file_fh;
     }
+
+    my $apache24 = version_compare( $apache_version, qw( >= 2.4.0 ) );
     if ( $log_data =~ m/(?:MaxClients|MaxRequestWorkers)/s ) {
         @logs = split /\n/, $log_data;
         undef $log_data;
         @logs = reverse @logs;
         for my $log_line (@logs) {
-            if ( version_compare( $apache_version, qw( < 2.3.0 ) ) ) {
-
-                # [Wed Nov 14 05:55:04 2012] [error] server reached MaxClients setting, consider raising the MaxClients setting
-                if ( $log_line =~ m{ \A \[ (\S+ \s+ \S+ \s+ \S+ \s+ \S+ \s+ \S+ ) \] \s+ \[error\] \s+ server \s+ reached \s+ MaxClients }xms ) {
-                    $limit_last_hit_date = $1;
-                    last;
-                }
-            }
-            elsif ( version_compare( $apache_version, qw( >= 2.4.0 ) ) ) {
+            if ( $apache24 and $log_line =~ m{ \A \[ (\S+ \s+ \S+ \s+ \S+ \s+ \S+ \s+ \S+ ) \] \s .* server \s reached \s MaxRequestWorkers }xms ) {
 
                 # [Fri Feb 08 09:58:45.875187 2013] [mpm_prefork:error] [pid 23220] AH00161: server reached MaxRequestWorkers
-                if ( $log_line =~ m{ \A \[ (\S+ \s+ \S+ \s+ \S+ \s+ \S+ \s+ \S+ ) \] \s (.*) server \s reached \s MaxRequestWorkers }xms ) {
-                    $limit_last_hit_date = $1;
-                    last;
-                }
+                $limit_last_hit_date = $1;
+                last;
+            }
+            elsif ( not $apache24 and $log_line =~ m{ \A \[ (\S+ \s+ \S+ \s+ \S+ \s+ \S+ \s+ \S+ ) \] \s+ \[error\] \s+ server \s+ reached \s+ MaxClients }xms ) {
+
+                # [Wed Nov 14 05:55:04 2012] [error] server reached MaxClients setting, consider raising the MaxClients setting
+                $limit_last_hit_date = $1;
+                last;
             }
         }
     }
 
     return unless $limit_last_hit_date;
 
-    if ( version_compare( $apache_version, qw( < 2.3.0 ) ) ) {
-        print_warn('Apache MaxClients: ');
-    }
-    elsif ( version_compare( $apache_version, qw( >= 2.4.0 ) ) ) {
+    if ($apache24) {
         print_warn('Apache MaxRequestWorkers: ');
+    }
+    else {
+        print_warn('Apache MaxClients: ');
     }
 
     print_warning("limit last reached at $limit_last_hit_date");
@@ -5296,6 +5266,7 @@ sub check_for_broken_mysql_tables {
 }
 
 sub get_clock_skew {
+    return if $OPT_SKIP_NETWORKING;
     ## last updated 2018-03-24
     ## we do this to avoid having to do the DNS lookup
     my @rdate_servers = qw(
@@ -5591,6 +5562,7 @@ sub check_for_rpm_overrides {
     if ($@) {
         print_warn('YAML::Syck: ');
         print_warning('failed to load -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl');
+        return;
     }
 
     my $ignore = {
@@ -5843,7 +5815,7 @@ sub get_license_info {
     return unless my $external_ip_address = get_external_ip();
     my $path = '/?ip=' . $external_ip_address;
     my $host = 'verify.cpanel.net';
-    return _http_get( Host => $host, Path => $path );
+    return _http_get( Host => $host, Path => $path, ReportTimeout => 1 );
 }
 
 sub check_for_license_info {
@@ -6644,6 +6616,7 @@ sub check_for_allow_update_in_named_conf {
                 print_warning('allow-update found. This can possibly prevent rndc from reloading. See ticket 4717591');
                 last;
             }
+            last if /^\s*view /i;
         }
         close $fh;
     }
@@ -6898,7 +6871,7 @@ sub check_for_cl_unsupported_memory_limits {
     return unless i_am('cloudlinux');
     return unless os_version_is(qw( < 6 ));
     return unless i_am_one_of( 'ea4', 'ea3' );
-    my ( $lsws_full_version, $lsws_numeric_version ) = get_lsws_version();
+    my ( $lsws_full_version, $lsws_numeric_version ) = @{ get_lsws_version_aref() };
 
     # See ticket # 5557825 - Several memory limits are not imposed: URL: https://helpdesk.cloudlinux.com/index.php?/Knowledgebase/Article/View/69/3/memory-limits-are-not-working
     # Per Igor:
@@ -7725,38 +7698,6 @@ sub check_for_ebury_ssh_G {
     }
 }
 
-sub check_for_ebury_ssh_banner {
-    my ( $host, $port, $ssh_banner );
-    my $ssh_connection = $ENV{'SSH_CONNECTION'};
-    return if !$ssh_connection;
-
-    if ( $ssh_connection =~ m{ \s (\d+\.\d+\.\d+\.\d+) \s (\d+) \z }xms ) {
-        ( $host, $port ) = ( $1, $2 );
-    }
-
-    return if !$host;
-    return if !$port;
-
-    my $sock = IO::Socket::INET->new(
-        PeerAddr => $host,
-        PeerPort => $port,
-        Proto    => 'tcp',
-        Timeout  => 5,
-    ) or return;
-
-    $ssh_banner = readline $sock;
-    close $sock;
-    return if !$ssh_banner;
-    chomp $ssh_banner;
-
-    if ( $ssh_banner =~ m{ \A SSH-2\.0-[0-9a-f]{22,46} }xms ) {
-        print_ebury_cdorked_predef('EBURY');
-        print_critical( "\tsshd banner matches known signature from ebury infected machines: " . $ssh_banner );
-        print_critical("\tReference: http://www.welivesecurity.com/2014/02/21/an-in-depth-analysis-of-linuxebury/");
-        print_critical();
-    }
-}
-
 sub check_for_ebury_ssh_shmem {
     my $ipcs_ref = get_ipcs_href();
 
@@ -7787,19 +7728,6 @@ sub check_for_ebury_root_file {
         print_critical( "\tFound file: " . $file );
         print_critical("\tReference: p24 from http://www.welivesecurity.com/wp-content/uploads/2014/03/operation_windigo.pdf");
         print_critical();
-    }
-}
-
-sub check_for_ebury_socket {
-    return unless my $netstat_out = timed_run( 0, 'netstat', '-nap' );
-    for my $line ( split( '\n', $netstat_out ) ) {
-        if ( $line =~ m{@/proc/udevd} ) {
-            print_ebury_cdorked_predef('EBURY');
-            print_critical('"netstat -nap" output contains:');
-            print_critical($line);
-            print_critical();
-            last;
-        }
     }
 }
 
@@ -8016,13 +7944,12 @@ sub check_pure_ftpd_conf_for_upload_script_and_dead {
     if ( defined( $pureftpd_conf->{'calluploadscript'} ) && $pureftpd_conf->{'calluploadscript'}->{value} eq 'yes' ) {
         if ( !-e '/var/run/pure-ftpd.upload.pipe' ) {
             print_warn("$PURE_FTPD_CONF_FILE: ");
-            print_warning("CallUploadScript set to yes, /var/run/pure-ftpd.upload.pipe is missing [might be broken ConfigServer's cxs ( http://configserver.com/cp/cxs.html )]");
+            print_warning("CallUploadScript set to yes, /var/run/pure-ftpd.upload.pipe is missing [might be broken ConfigServer's cxs ( http://configserver.com/cp/cxs.html ) or Imunify360]");
         }
         else {
-            my $out = timed_run( 0, 'lsof', '-n', '/var/run/pure-ftpd.upload.pipe' );
-            if ( !$out ) {
+            unless ( grep_process_cmd( 'pure-uploadscri', 'root' ) ) {
                 print_warn("$PURE_FTPD_CONF_FILE: ");
-                print_warning("CallUploadScript set to yes, and /var/run/pure-ftpd.upload.pipe does not seem to have anything listening on it. [might be broken ConfigServer's cxs ( http://configserver.com/cp/cxs.html )]");
+                print_warning("CallUploadScript set to yes, but pure-uploadscript does not appear to be running. [might be broken ConfigServer's cxs ( http://configserver.com/cp/cxs.html ) or Imunify360]");
             }
         }
     }
@@ -8034,7 +7961,7 @@ sub get_myip {
 
     # myip.cpanel.net supports HTTP ports 80, 2089 and HTTPS port 443.
     my $ip;
-    my $reply = _http_get( Host => 'myip.cpanel.net', Path => '/v1.0/', Tries => 2, ReportTimeout => 1, Port => $port );
+    my $reply = _http_get( Host => 'myip.cpanel.net', Path => '/v1.0/', ReportTimeout => 1, Port => $port );
     if ( defined($reply) && $reply =~ m{ ^ \s* ([0-9]+.[0-9]+.[0-9]+.[0-9]+) \s* $ }xms ) {
         $ip = $1;
         chomp $ip;
@@ -8043,27 +7970,27 @@ sub get_myip {
 }
 
 sub get_external_ip {
-    print "I am getting external 80 IP\n";
     return get_myip();
 }
 
 sub get_external_license_ip {
-    print "I am getting external 2089 IP\n";
     return get_myip('2089');
 }
 
 sub _http_get {
     my (%opts_in) = @_;
+    return if $OPT_SKIP_NETWORKING;
     my %opts = (
         Agent               => "SSP/${VERSION}",
         HostReconnectDelay  => 0.25,
         MaxReply            => 50_000,
+        MultiHomed          => 1,
         Path                => '/',
         Port                => 80,
         Proto               => 'tcp',
         ReportTimeout       => 0,
         ReportTimeoutHeader => '',
-        Timeout             => 5,
+        Timeout             => 2,
         Tries               => 1,
         WantHeaders         => 0,
         %opts_in
@@ -8081,16 +8008,17 @@ sub _http_get {
                 die "alarm\n";
             };
             my $now = time();
-            if ( defined $HTTP_GET_HOST_CACHE->{ $opts{Host} } and $now - $HTTP_GET_HOST_CACHE->{ $opts{Host} } <= $opts{HostReconnectDelay} ) {
+            if ( defined $HTTP_GET_HOST_CACHE->{ $opts{Host} } and $now - 1 - $HTTP_GET_HOST_CACHE->{ $opts{Host} } <= $opts{HostReconnectDelay} ) {
                 select( undef, undef, undef, $opts{HostReconnectDelay} );    ## no critic (ProhibitSleepViaSelect) # old perl compat
             }
             $HTTP_GET_HOST_CACHE->{ $opts{Host} } = $now;
-            alarm $opts{Timeout};
+            alarm $opts{Timeout} + ( $opts{MultiHomed} ? $opts{Timeout} + 1 : 0 );    # MultiHomed = double timeout + 1 to give it a chance to work
             $sock = IO::Socket::INET->new(
-                PeerAddr => $opts{Host},
-                PeerPort => $opts{Port},
-                Proto    => $opts{Proto},
-                Timeout  => $opts{Timeout},
+                MultiHomed => $opts{MultiHomed},
+                PeerAddr   => $opts{Host},
+                PeerPort   => $opts{Port},
+                Proto      => $opts{Proto},
+                Timeout    => $opts{Timeout},
             );
             my $header_host = ( $opts{Port} != 80 ) ? $opts{Host} . ":" . $opts{Port} : $opts{Host};
             if ($sock) {
@@ -8102,7 +8030,7 @@ sub _http_get {
         };
         if ( $@ eq "alarm\n" && $opts{ReportTimeout} ) {
             print_warn( $opts{ReportTimeoutHeader} . 'Request for http://' . $opts{Host} . ':' . $opts{Port} . $opts{Path} . ' timed out' );
-            print_warning( ': attempt ' . $try . ' of ' . $opts{Tries} ) if $opts{Tries} > 1;
+            print_warning( ( $opts{Tries} > 1 ) ? ': attempt ' . $try . ' of ' . $opts{Tries} : '' );
             print RESET;
             next;
         }
@@ -8229,6 +8157,36 @@ Ticket Number: $ticket
 cPanel Version: $version
 
 END_OF_TEMPLATE
+}
+
+sub print_profiling_data {
+    if ( defined $MEMOIZE_CACHE{'PROFILING'} ) {
+        my $combined_elapsed;
+        my $combined_precache;
+        print "\n\nMemoize cache profile:\n";
+        for my $func ( sort keys %MEMOIZE_CACHE ) {
+            next if $func eq 'PRECACHE';
+            next if $func eq 'PROFILING';
+            my $precached = $MEMOIZE_CACHE{$func}->{'PRECACHED'} ? ' [precached]' : '';
+            print "  ${func}${precached} elapsed:\n";
+            for my $key ( sort keys %{ $MEMOIZE_CACHE{$func}->{'PROFILE'} } ) {
+                $combined_elapsed += $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'elapsed'};
+                $combined_precache += $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'elapsed'} if $precached;
+                printf "    %.3f s [%s]\n", $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'elapsed'}, $key;
+            }
+        }
+        printf "\nCombined memoized functions elapsed time: %.3f s\n", $combined_elapsed;
+        if ( defined $MEMOIZE_CACHE{'PRECACHE'} and defined $MEMOIZE_CACHE{'PRECACHE'}->{'PROFILE'} ) {
+            my $precache_wall = $MEMOIZE_CACHE{'PRECACHE'}->{'PROFILE'}->{'elapsed'};
+            printf "Precache combined time elapsed: %.3f s\n", $combined_precache;
+            printf "Precache wall time elapsed: %.3f s\n",     $precache_wall;
+            printf "Precache combined minus wall (wall time saved by precaching): %.3f s\n", ( $combined_precache - $precache_wall );
+        }
+        print "\n";
+        my @times = times;
+        my @labels = ( 'User', 'System', 'User (all children)', 'System (all children)' );
+        print "$labels[$_]: $times[$_] s\n" for 0 .. $#times;
+    }
 }
 
 sub decode_json {
@@ -8446,7 +8404,19 @@ sub _memoize {    ## no critic (RequireArgUnpacking)
             $MEMOIZE_CACHE{$func} = {};
             my $cache_sub = sub {
                 my $key = ( wantarray() ? 'L' : 'S' ) . '^' . join( ' ', @_ );
-                $MEMOIZE_CACHE{$func}->{$key} = $func_ref->(@_) unless exists $MEMOIZE_CACHE{$func}->{$key};
+                if ( not exists $MEMOIZE_CACHE{$func}->{$key} ) {
+                    if ( defined $MEMOIZE_CACHE{'PROFILING'} ) {
+                        $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'start'} = [ Time::HiRes::gettimeofday() ];
+                    }
+                    $MEMOIZE_CACHE{$func}->{$key} = $func_ref->(@_);
+                    if ( defined $MEMOIZE_CACHE{'PROFILING'} ) {
+                        $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'elapsed'} = Time::HiRes::tv_interval( $MEMOIZE_CACHE{$func}->{'PROFILE'}->{$key}->{'start'} );
+                    }
+                }
+                print STDOUT $MEMOIZE_CACHE{$func}->{'STDOUT'} if defined $MEMOIZE_CACHE{$func}->{'STDOUT'};
+                delete $MEMOIZE_CACHE{$func}->{'STDOUT'}       if defined $MEMOIZE_CACHE{$func}->{'STDOUT'};
+                print STDERR $MEMOIZE_CACHE{$func}->{'STDERR'} if defined $MEMOIZE_CACHE{$func}->{'STDERR'};
+                delete $MEMOIZE_CACHE{$func}->{'STDERR'}       if defined $MEMOIZE_CACHE{$func}->{'STDERR'};
                 return $MEMOIZE_CACHE{$func}->{$key};
             };
             no strict 'refs';          ## no critic (ProhibitNoStrict)
@@ -8460,8 +8430,24 @@ sub _memoize {    ## no critic (RequireArgUnpacking)
 }
 
 sub _memoize_parallel_populate_cache {    ## no critic (RequireArgUnpacking)
+                                          # We have to try conditionally loading Data::Dumper here instead of at BEGIN because the CentOS base 'perl' package does not include it, even though it is a core part of Perl.
+    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require Data::Dumper; };
+    if ($@) {
+        print_info('Perl Data::Dumper: ');
+        print_normal('not available -- SSP will take longer to run -- Use /usr/local/cpanel/3rdparty/bin/perl or "yum install perl-Data-Dumper" if needed');
+        return;
+    }
+    return if defined $MEMOIZE_CACHE{'PRECACHE'} and $MEMOIZE_CACHE{'PRECACHE'}->{'disabled'};
+
+    print_start("Gathering some information, this may take a few moments...\n");
+
+    if ( defined $MEMOIZE_CACHE{'PROFILING'} ) {
+        $MEMOIZE_CACHE{'PRECACHE'}->{'PROFILE'}->{'start'} = [ Time::HiRes::gettimeofday() ];
+    }
     for my $func (@_) {
-        if ( exists $MEMOIZE_CACHE{$func} ) {
+
+        # Subs prefixed with _serialize_ can be used to serialize multiple memoized functions
+        if ( exists $MEMOIZE_CACHE{$func} or ( index( $func, '_serialize_' ) == 0 and exists &{$func} ) ) {
             new_async_call( $func, \&$func );
         }
         else {
@@ -8474,14 +8460,20 @@ sub _memoize_parallel_populate_cache {    ## no critic (RequireArgUnpacking)
             async_call_result($func);
         }
     }
+    if ( defined $MEMOIZE_CACHE{'PROFILING'} ) {
+        $MEMOIZE_CACHE{'PRECACHE'}->{'PROFILE'}->{'elapsed'} = Time::HiRes::tv_interval( $MEMOIZE_CACHE{'PRECACHE'}->{'PROFILE'}->{'start'} );
+    }
 }
 
 sub _merge_into_memoize_cache {
-    my ($new_ref) = @_;
+    my ( $new_ref, $job_name, $stdout_sref, $stderr_sref ) = @_;
     for my $key ( keys %{$new_ref} ) {
         next unless scalar keys %{ $new_ref->{$key} };
         $MEMOIZE_CACHE{$key} = $new_ref->{$key};
     }
+    $MEMOIZE_CACHE{$job_name}->{'PRECACHED'} = 1;
+    $MEMOIZE_CACHE{$job_name}->{'STDOUT'}    = $$stdout_sref if defined $$stdout_sref;
+    $MEMOIZE_CACHE{$job_name}->{'STDERR'}    = $$stderr_sref if defined $$stderr_sref;
 }
 
 {    # Async jobs
@@ -8504,16 +8496,17 @@ sub _merge_into_memoize_cache {
 
         if ( $pid == 0 ) {
             close $dumper_r;
+            my $child_stdout;
+            my $child_stderr;
 
+            close STDOUT;
+            close STDERR;
             open STDIN,  '<', '/dev/null';
-            open STDOUT, '>', '/dev/null';
-
-            #open STDERR, '>', '/dev/null';
-
+            open STDOUT, '>', \$child_stdout;
+            open STDERR, '>', \$child_stderr;
             $coderef->(@args);
 
-            # We can export anything we want from this child, but right now we only need %MEMOIZE_CACHE
-            my $dumper = Data::Dumper->new( [ \%MEMOIZE_CACHE ], [qw(*child_memoize_cache)] );
+            my $dumper = Data::Dumper->new( [ \%MEMOIZE_CACHE, $child_stdout, $child_stderr ], [qw(*child_memoize_cache child_stdout child_stderr)] );
             print $dumper_w $dumper->Purity(1)->Terse(0)->Indent(0)->Dump;
             exit;
         }
@@ -8561,8 +8554,10 @@ sub _merge_into_memoize_cache {
     sub async_call_result {
         my ($job_name) = @_;
         my %child_memoize_cache;
+        my $child_stdout;
+        my $child_stderr;
         defined $results{$job_name}{dumper} && defined ${ $results{$job_name}{dumper} } && eval ${ $results{$job_name}{dumper} };    ## no critic (StringyEval)
-        _merge_into_memoize_cache( \%child_memoize_cache );
+        _merge_into_memoize_cache( \%child_memoize_cache, $job_name, \$child_stdout, \$child_stderr );
     }
 }
 
