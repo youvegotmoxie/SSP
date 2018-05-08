@@ -34,7 +34,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.188';
+our $VERSION = '4.99.189';
 
 # Global variables that alter application runtime
 our $OPT_SKIP_NETWORKING;    # Disable network calls
@@ -2923,9 +2923,13 @@ sub check_apache_modules {
             $add->( 'ruid2_module', 'Enabled with Jail Apache Virtual Hosts tweak and suPHP handler, these are NOT COMPATIBLE, see FB-70561, FB-105901.' );
         }
     }
+
     if ( i_am('cloudlinux') ) {
         $add->( 'mpm_itk_module', 'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
         $add->( 'ruid2_module',   'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
+        unless ($lsws_full_version) {
+            $add->( 'suexec_module', 'PHP Selector may not work if PHP handlers are not set to suPHP or lsapi.', 'check_missing' => 1 );
+        }
     }
 
     for my $module ( sort keys %check ) {
