@@ -2927,8 +2927,12 @@ sub check_apache_modules {
     if ( i_am('cloudlinux') ) {
         $add->( 'mpm_itk_module', 'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
         $add->( 'ruid2_module',   'CloudLinux LVE memory limits not imposed on Apache processes, and not compatible with PHP Selector - https://docs.cloudlinux.com/index.html?compatiblity_matrix.html' );
-        unless ($lsws_full_version) {
-            $add->( 'suexec_module', 'PHP Selector may not work if PHP handlers are not set to suPHP or lsapi.', 'check_missing' => 1 );
+        if ($lsws_full_version) {
+            my $lsws_config = "/usr/local/lsws/conf/httpd_config.xml";
+            my $lsws_suexec = qx [ grep -w phpSuExec $lsws_config | grep -oP "(?<=\>)[0-9].*(?=\<)" ];
+            if ($lsws_suexec == 0) {
+                $add->( 'suexec_module', 'PHP Selector may not work if PHP handlers are not set to suPHP or lsapi.', 'check_missing' => 1 );
+            }
         }
     }
 
