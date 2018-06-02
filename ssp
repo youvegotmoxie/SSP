@@ -362,7 +362,6 @@ sub run {
     check_for_bw_module_and_more_than_1024_vhosts();
     check_for_uppercase_chars_in_hostname();
     check_for_bad_permissions_on_named_ca();
-    check_for_use_compiled_dnsadmin();
     check_for_jailshell_additional_mounts_trailing_slash();
     check_for_allow_query_localhost();
     check_for_nocloudlinux_touchfile();
@@ -6003,39 +6002,6 @@ sub check_for_bad_permissions_on_named_ca {
         print_warn("${namedca}: ");
         print_warning('may not be readable to the \'named\' user, causing named to not restart');
     }
-}
-
-sub check_for_use_compiled_dnsadmin {
-    return unless i_am_one_of( 'cpanel', 'dnsonly' );
-    return if ( defined $CPCONF{'disable_compiled_dnsadmin'} and $CPCONF{'disable_compiled_dnsadmin'} == 1 );
-
-    my $has_custom_dnsadmin_modules;
-    my ( @setup_modules, @remote_modules );
-    my $setup_modules_dir  = '/usr/local/cpanel/Cpanel/NameServer/Remote';
-    my $remote_modules_dir = '/usr/local/cpanel/Cpanel/NameServer/Setup/Remote';
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Setup+Modules
-    if ( -d $setup_modules_dir ) {
-        opendir( my $dir_fh, $setup_modules_dir );
-        @setup_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Remote+Modules
-    if ( -d $remote_modules_dir ) {
-        opendir( my $dir_fh, $remote_modules_dir );
-        @remote_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    @setup_modules  = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @setup_modules;
-    @remote_modules = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @remote_modules;
-
-    # return if there are no custom dnsadmin modules being used
-    return if ( scalar @setup_modules == 0 and scalar @remote_modules == 0 );
-
-    print_warn('dnsadmin: ');
-    print_warning('Tweak Settings >> Use compiled dnsadmin: On. If problems with custom dnsadmin modules, see if disabling helps (see ticket 4279965)');
 }
 
 sub check_for_jailshell_additional_mounts_trailing_slash {
