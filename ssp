@@ -2830,7 +2830,7 @@ sub check_ea4_paths_conf {
         'dir_run'              => '/run/apache2',
         'file_access_log'      => '/etc/apache2/logs/access_log',
         'file_conf'            => '/etc/apache2/conf/httpd.conf',
-        'file_conf_mime_types' => '/etc/mime.types',
+        'file_conf_mime_types' => '/etc/apache2/conf/mime.types',
         'file_conf_php_conf'   => '/etc/apache2/conf.d/php.conf',
         'file_conf_srm_conf'   => '/etc/apache2/conf.d/srm.conf',
         'file_error_log'       => '/etc/apache2/logs/error_log',
@@ -3205,7 +3205,7 @@ sub check_for_non_default_permissions {
         $check{'/usr/local/apache/bin/suexec'}      = { symlink => '/usr/sbin/suexec', check_missing => 1 };
         $check{'/usr/local/apache/conf/httpd.conf'} = { symlink => '/etc/apache2/conf/httpd.conf', check_missing => 1 };
         $check{'/usr/local/apache/conf/includes'}   = { symlink => '/etc/apache2/conf.d/includes', check_missing => 1 };
-        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/mime.types', check_missing => 1 };
+        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/apache2/conf/mime.types', check_missing => 1 };
         $check{'/usr/local/apache/conf/php.conf'}   = { symlink => '/etc/apache2/conf.d/php.conf', check_missing => 1 };
         $check{'/usr/local/apache/domlogs'}         = { symlink => '/etc/apache2/logs/domlogs', check_missing => 1 };
         $check{'/usr/local/apache/htdocs'}          = { symlink => '/var/www/html', check_missing => 1 };
