@@ -96,6 +96,7 @@ sub init {
           get_external_ip
           get_external_license_ip
           get_hostinfo_href
+          get_hostname
           get_installed_ea4_php_href
           get_ipcs_href
           get_license_info
@@ -114,7 +115,6 @@ sub init {
           get_rpm_href
           get_tiers_file
           get_tiers_json_href
-          hostname
           )
     );
 
@@ -1357,7 +1357,7 @@ sub check_for_ea3 {
 ##############################
 
 sub print_hostname {
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     print_info('Hostname: ');
 
     if ( $hostname !~ /([\w-]+)\.([\w-]+)\.(\w+)/ ) {
@@ -1900,7 +1900,7 @@ sub check_for_remote_mysql {
                 }
             }
         }
-        elsif ( $mysql_host eq 'localhost' or $mysql_host eq hostname() ) {
+        elsif ( $mysql_host eq 'localhost' or $mysql_host eq get_hostname() ) {
             $mysql_is_local = 1;
         }
         if ( !$mysql_is_local ) {
@@ -4610,7 +4610,7 @@ sub check_for_non_default_modsec_rules {
 sub check_etc_hosts_sanity {
     my $hosts = '/etc/hosts';
     my ( $localhost, $httpupdate, $localhost_not_127, $hostname_entry ) = ( 0, 0, 0, 0 );
-    my $hostname = hostname();
+    my $hostname = get_hostname();
 
     if ( !-f $hosts ) {
         print_warn("$hosts: ");
@@ -4876,7 +4876,7 @@ sub check_mysql_config {
     my %mysqld_checks = (
         'datadir'             => { default => '/var/lib/mysql' },
         'innodbforcerecovery' => { default => '0', help => 'Makes all InnoDB databases read-only, will break MySQL upgrades.' },
-        'logerror'            => { default => '/var/lib/mysql/' . hostname() . '.err' },
+        'logerror'            => { default => '/var/lib/mysql/' . get_hostname() . '.err' },
         'lowercasetablenames' => { default => '0', help => 'Will break space usage reporting of databases with mixed-case names. See CPANEL-8453.' },
         'oldpasswords'        => { default => '0', help => 'Not recommended, non-native passwords are incompatible with MySQL 5.6+ and some MySQL clients. See also CPANEL-10047, 10826, 10940, 10954, 11018, and 11019.' },
         'skipnameresolve'     => { help    => 'Seeing "Can\'t find any matching row"? That may be why.' },
@@ -5955,7 +5955,7 @@ sub check_for_bw_module_and_more_than_1024_vhosts {
 }
 
 sub check_for_uppercase_chars_in_hostname {
-    if ( hostname() =~ /[A-Z]/ ) {
+    if ( get_hostname() =~ /[A-Z]/ ) {
         print_warn('Hostname: ');
         print_warning('contains UPPERCASE characters. Seeing incorrect info at cPanel >> Configure Email Client? See ticket 4231465');
     }
@@ -6162,7 +6162,7 @@ sub check_for_suphp_but_no_fileprotect {
 
 sub check_if_hostname_missing_from_localdomains {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( open my $localdomains_fh, '<', '/etc/localdomains' ) {
         while (<$localdomains_fh>) {
             return if (/^${hostname}$/);
@@ -6497,7 +6497,7 @@ sub check_for_roundcube_overlay {
 
 sub check_for_hostname_park_zoneexists {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( -f "/var/named/$hostname.db" and ( not defined $CPCONF{'allowparkonothers'} or $CPCONF{'allowparkonothers'} != 1 ) ) {
         print_warn('Parking: ');
         print_warning('since zone of hostname exists, "Allow domain parking across accounts" must be ON to park on the hostname');
@@ -8339,6 +8339,20 @@ sub cpanel_version_is {
 sub os_version_is {
     my ( $mode, $ver ) = @_;
     return version_compare( $RUN_STATE->{var}->{os_version}, $mode, $ver );
+}
+
+sub get_hostname {
+
+    # Return hostname() as-is on versions prior to 70.
+    if ( cpanel_version_is(qw( < 11.69.0.0 )) ) {
+        return hostname();
+    }
+    my $h = timed_run( 10, 'hostname', '-f' );
+    chomp $h if defined $h;
+    if ( not length($h) ) {    # Fall back to Sys::Hostname
+        $h = hostname();
+    }
+    return $h;
 }
 
 # JSON
