@@ -34,7 +34,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.188';
+our $VERSION = '4.99.189';
 
 # Global variables that alter application runtime
 our $OPT_SKIP_NETWORKING;    # Disable network calls
@@ -96,6 +96,7 @@ sub init {
           get_external_ip
           get_external_license_ip
           get_hostinfo_href
+          get_hostname
           get_installed_ea4_php_href
           get_ipcs_href
           get_license_info
@@ -114,7 +115,6 @@ sub init {
           get_rpm_href
           get_tiers_file
           get_tiers_json_href
-          hostname
           )
     );
 
@@ -362,7 +362,6 @@ sub run {
     check_for_bw_module_and_more_than_1024_vhosts();
     check_for_uppercase_chars_in_hostname();
     check_for_bad_permissions_on_named_ca();
-    check_for_use_compiled_dnsadmin();
     check_for_jailshell_additional_mounts_trailing_slash();
     check_for_allow_query_localhost();
     check_for_nocloudlinux_touchfile();
@@ -1358,7 +1357,7 @@ sub check_for_ea3 {
 ##############################
 
 sub print_hostname {
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     print_info('Hostname: ');
 
     if ( $hostname !~ /([\w-]+)\.([\w-]+)\.(\w+)/ ) {
@@ -1901,7 +1900,7 @@ sub check_for_remote_mysql {
                 }
             }
         }
-        elsif ( $mysql_host eq 'localhost' or $mysql_host eq hostname() ) {
+        elsif ( $mysql_host eq 'localhost' or $mysql_host eq get_hostname() ) {
             $mysql_is_local = 1;
         }
         if ( !$mysql_is_local ) {
@@ -2831,7 +2830,7 @@ sub check_ea4_paths_conf {
         'dir_run'              => '/run/apache2',
         'file_access_log'      => '/etc/apache2/logs/access_log',
         'file_conf'            => '/etc/apache2/conf/httpd.conf',
-        'file_conf_mime_types' => '/etc/mime.types',
+        'file_conf_mime_types' => '/etc/apache2/conf/mime.types',
         'file_conf_php_conf'   => '/etc/apache2/conf.d/php.conf',
         'file_conf_srm_conf'   => '/etc/apache2/conf.d/srm.conf',
         'file_error_log'       => '/etc/apache2/logs/error_log',
@@ -3206,7 +3205,7 @@ sub check_for_non_default_permissions {
         $check{'/usr/local/apache/bin/suexec'}      = { symlink => '/usr/sbin/suexec', check_missing => 1 };
         $check{'/usr/local/apache/conf/httpd.conf'} = { symlink => '/etc/apache2/conf/httpd.conf', check_missing => 1 };
         $check{'/usr/local/apache/conf/includes'}   = { symlink => '/etc/apache2/conf.d/includes', check_missing => 1 };
-        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/mime.types', check_missing => 1 };
+        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/apache2/conf/mime.types', check_missing => 1 };
         $check{'/usr/local/apache/conf/php.conf'}   = { symlink => '/etc/apache2/conf.d/php.conf', check_missing => 1 };
         $check{'/usr/local/apache/domlogs'}         = { symlink => '/etc/apache2/logs/domlogs', check_missing => 1 };
         $check{'/usr/local/apache/htdocs'}          = { symlink => '/var/www/html', check_missing => 1 };
@@ -4611,7 +4610,7 @@ sub check_for_non_default_modsec_rules {
 sub check_etc_hosts_sanity {
     my $hosts = '/etc/hosts';
     my ( $localhost, $httpupdate, $localhost_not_127, $hostname_entry ) = ( 0, 0, 0, 0 );
-    my $hostname = hostname();
+    my $hostname = get_hostname();
 
     if ( !-f $hosts ) {
         print_warn("$hosts: ");
@@ -4877,7 +4876,7 @@ sub check_mysql_config {
     my %mysqld_checks = (
         'datadir'             => { default => '/var/lib/mysql' },
         'innodbforcerecovery' => { default => '0', help => 'Makes all InnoDB databases read-only, will break MySQL upgrades.' },
-        'logerror'            => { default => '/var/lib/mysql/' . hostname() . '.err' },
+        'logerror'            => { default => '/var/lib/mysql/' . get_hostname() . '.err' },
         'lowercasetablenames' => { default => '0', help => 'Will break space usage reporting of databases with mixed-case names. See CPANEL-8453.' },
         'oldpasswords'        => { default => '0', help => 'Not recommended, non-native passwords are incompatible with MySQL 5.6+ and some MySQL clients. See also CPANEL-10047, 10826, 10940, 10954, 11018, and 11019.' },
         'skipnameresolve'     => { help    => 'Seeing "Can\'t find any matching row"? That may be why.' },
@@ -5956,7 +5955,7 @@ sub check_for_bw_module_and_more_than_1024_vhosts {
 }
 
 sub check_for_uppercase_chars_in_hostname {
-    if ( hostname() =~ /[A-Z]/ ) {
+    if ( get_hostname() =~ /[A-Z]/ ) {
         print_warn('Hostname: ');
         print_warning('contains UPPERCASE characters. Seeing incorrect info at cPanel >> Configure Email Client? See ticket 4231465');
     }
@@ -6003,39 +6002,6 @@ sub check_for_bad_permissions_on_named_ca {
         print_warn("${namedca}: ");
         print_warning('may not be readable to the \'named\' user, causing named to not restart');
     }
-}
-
-sub check_for_use_compiled_dnsadmin {
-    return unless i_am_one_of( 'cpanel', 'dnsonly' );
-    return if ( defined $CPCONF{'disable_compiled_dnsadmin'} and $CPCONF{'disable_compiled_dnsadmin'} == 1 );
-
-    my $has_custom_dnsadmin_modules;
-    my ( @setup_modules, @remote_modules );
-    my $setup_modules_dir  = '/usr/local/cpanel/Cpanel/NameServer/Remote';
-    my $remote_modules_dir = '/usr/local/cpanel/Cpanel/NameServer/Setup/Remote';
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Setup+Modules
-    if ( -d $setup_modules_dir ) {
-        opendir( my $dir_fh, $setup_modules_dir );
-        @setup_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Remote+Modules
-    if ( -d $remote_modules_dir ) {
-        opendir( my $dir_fh, $remote_modules_dir );
-        @remote_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    @setup_modules  = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @setup_modules;
-    @remote_modules = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @remote_modules;
-
-    # return if there are no custom dnsadmin modules being used
-    return if ( scalar @setup_modules == 0 and scalar @remote_modules == 0 );
-
-    print_warn('dnsadmin: ');
-    print_warning('Tweak Settings >> Use compiled dnsadmin: On. If problems with custom dnsadmin modules, see if disabling helps (see ticket 4279965)');
 }
 
 sub check_for_jailshell_additional_mounts_trailing_slash {
@@ -6196,7 +6162,7 @@ sub check_for_suphp_but_no_fileprotect {
 
 sub check_if_hostname_missing_from_localdomains {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( open my $localdomains_fh, '<', '/etc/localdomains' ) {
         while (<$localdomains_fh>) {
             return if (/^${hostname}$/);
@@ -6531,7 +6497,7 @@ sub check_for_roundcube_overlay {
 
 sub check_for_hostname_park_zoneexists {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( -f "/var/named/$hostname.db" and ( not defined $CPCONF{'allowparkonothers'} or $CPCONF{'allowparkonothers'} != 1 ) ) {
         print_warn('Parking: ');
         print_warning('since zone of hostname exists, "Allow domain parking across accounts" must be ON to park on the hostname');
@@ -8373,6 +8339,20 @@ sub cpanel_version_is {
 sub os_version_is {
     my ( $mode, $ver ) = @_;
     return version_compare( $RUN_STATE->{var}->{os_version}, $mode, $ver );
+}
+
+sub get_hostname {
+
+    # Return hostname() as-is on versions prior to 70.
+    if ( cpanel_version_is(qw( < 11.69.0.0 )) ) {
+        return hostname();
+    }
+    my $h = timed_run( 10, 'hostname', '-f' );
+    chomp $h if defined $h;
+    if ( not length($h) ) {    # Fall back to Sys::Hostname
+        $h = hostname();
+    }
+    return $h;
 }
 
 # JSON
