@@ -164,8 +164,10 @@ sub run {
         'no-speed'   => sub { $MEMOIZE_CACHE{'PRECACHE'} = { disabled => 1 }; },
         'profiling'  => sub {
             load_module_with_fallbacks(
-                'needed_subs' => [qw{tv_interval gettimeofday}],
-                'modules'     => [qw{Time::HiRes}],
+                'needed_subs'  => [qw{tv_interval gettimeofday}],
+                'modules'      => [qw{Time::HiRes}],
+                'fail_warning' => "Missing Perl Module: Time::HiRes -- Profiling won't work without this -- Try using /usr/local/cpanel/3rdparty/bin/perl?",
+                'fail_fatal'   => 1,
             );
             $MEMOIZE_CACHE{'PROFILING'} = { enabled => 1 };
         },
@@ -5565,15 +5567,11 @@ sub check_for_rpm_overrides {
     }
 
     return unless -s $local_versions;
-    my $yaml_module = load_module_with_fallbacks(
-        'needed_subs' => [qw{LoadFile}],
-        'modules'     => [qw{YAML::Syck}],
-        'fail_safe'   => 1,
+    return if !load_module_with_fallbacks(
+        'needed_subs'  => [qw{LoadFile}],
+        'modules'      => [qw{YAML::Syck}],
+        'fail_warning' => 'Missing Perl Module: YAML::Syck -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl?',
     );
-    if ( !$yaml_module ) {
-        print_warn("SSP can't check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl\n");
-        return;
-    }
 
     my $ignore = {
         'target_settings' => {
@@ -8177,18 +8175,21 @@ sub print_profiling_data {
     }
 }
 
-sub decode_json {
-    my ($raw_json) = @_;
-    return unless my $json = json();
-    my $href;
-    eval { $href = $json->new->utf8->decode($raw_json); };    # All or nothing, just be quiet.
-    return $href;
-}
-
 sub get_tiers_json_href {
     my $raw = _http_get( Host => 'httpupdate.cpanel.net', Path => '/cpanelsync/TIERS.json' );
     return unless $raw;
-    my $href = decode_json($raw);
+
+    my $json = load_module_with_fallbacks(
+        'needed_subs'  => [qw{new utf8 decode}],
+        'modules'      => [qw{Cpanel::JSON::XS JSON::XS JSON::PP}],
+        'fail_warning' => "Missing Perl Modules: JSON -- TIERS.json can't be read without this -- Try using /usr/local/cpanel/3rdparty/bin/perl?",
+    );
+
+    return unless $json;
+    my $href;
+    local $@;
+    eval { $href = $json->new->utf8->decode($raw); };    # All or nothing, just be quiet.
+
     return if not exists $href->{'tiers'};
     return $href;
 }
@@ -8364,36 +8365,22 @@ sub get_hostname {
     return $h;
 }
 
-# JSON
-{
-    my $json;
-    my $tried_import;
-
-    sub json {
-        return $json if $json;
-        return if $tried_import;
-        $json = load_module_with_fallbacks(
-            'needed_subs' => [qw{encode decode}],
-            'modules'     => [qw{Cpanel::JSON::XS JSON::XS JSON::PP}],
-        );
-        return $json;
-    }
-}
-
 # SUB load_module_with_fallbacks(
-#   'modules'     => [ 'module1', 'module2', ... ],
-#   'needed_subs' => [ 'do_needful', ... ],
-#   'fallback'    => sub { *do_needful = sub { ... }; return; },
-#   'fail_safe'   => 1,
+#   'modules'      => [ 'module1', 'module2', ... ],
+#   'needed_subs'  => [ 'do_needful', ... ],
+#   'fallback'     => sub { *do_needful = sub { ... }; return; },
+#   'fail_warning' => "Oops, something went wrong, you may want to do something about this",
+#   'fail_fatal'   => 1,
 # );
 #
 # Input is HASH of options:
-#   'modules'     => ARRAYREF of SCALAR strings corresponding to module names to attempt to import. These are attempted first.
-#   'needed_subs' => ARRAYREF of SCALAR strings corresponding to subroutine names you need defined from the module(s).
-#   'fallback'    => CODEREF which defines the needed subs manually. Only used if all modules passed in above fail to load. Optional.
-#   'fail_safe'   => BOOL whether or not to die if you fail to load the needed subs/modules via all available methods.
+#   'modules'      => ARRAYREF of SCALAR strings corresponding to module names to attempt to import. These are attempted first.
+#   'needed_subs'  => ARRAYREF of SCALAR strings corresponding to subroutine names you need defined from the module(s).
+#   'fallback'     => CODEREF which defines the needed subs manually. Only used if all modules passed in above fail to load. Optional.
+#   'fail_warning' => SCALAR string that will convey a message to the user if the module(s) fail to load. Optional.
+#   'fail_fatal'   => BOOL whether you want to die if you fail to load the needed subs/modules via all available methods. Optional.
 #
-# Returns the module/namespace that loaded correctly, throws if all available attempts at finding the desired needed_subs subs fail (unless fail_safe passed).
+# Returns the module/namespace that loaded correctly, throws if all available attempts at finding the desired needed_subs subs fail and fail_fatal is passed.
 sub load_module_with_fallbacks {
     my %opts = @_;
     my $namespace_loaded;
@@ -8417,14 +8404,8 @@ sub load_module_with_fallbacks {
     # Fallback to coderef, but don't do sanity checking on this, as it is presumed the caller "knows what they are doing" if passing a coderef.
     if ( !$namespace_loaded ) {
         if ( !$opts{'fallback'} || ref $opts{'fallback'} != 'CODE' ) {
-            my $msg = "        Failed to load any of the following modules:\n";
-            $msg .= "        " . join( ", ", @{ $opts{'modules'} } ) . "\n";
-            $msg .= "        OR they did not have the wanted subroutines defined in the modules:\n";
-            $msg .= "        " . join( ", ", @{ $opts{'needed_subs'} } ) . "\n";
-            $msg .= "        ...and no fallback subroutines exist within SSP to accomodate this.";
-            print_warn("SSP::load_module_with_fallbacks():\n");
-            print_warning($msg);
-            die "Stopping here." if !$opts{'fail_safe'};
+            print_warn("$opts{'fail_warning'}\n") if $opts{'fail_warning'};
+            die "Stopping here." if $opts{'fail_fatal'};
         }
         else {
             $opts{'fallback'}->();
@@ -8472,15 +8453,11 @@ sub _memoize {    ## no critic (RequireArgUnpacking)
 
 sub _memoize_parallel_populate_cache {    ## no critic (RequireArgUnpacking)
                                           # We have to try conditionally loading Data::Dumper here instead of at BEGIN because the CentOS base 'perl' package does not include it, even though it is a core part of Perl.
-    my $dumper = load_module_with_fallbacks(
-        'needed_subs' => [qw{Purity Terse Indent Dump new}],
-        'modules'     => [qw{Data::Dumper}],
-        'fail_safe'   => 1,
+    return if !load_module_with_fallbacks(
+        'needed_subs'  => [qw{Purity Terse Indent Dump new}],
+        'modules'      => [qw{Data::Dumper}],
+        'fail_warning' => 'Data::Dumper: SSP will take longer to run -- Use /usr/local/cpanel/3rdparty/bin/perl or "yum install perl-Data-Dumper" if needed',
     );
-    if ( !$dumper ) {
-        print_info("SSP will take longer to run -- Use /usr/local/cpanel/3rdparty/bin/perl or \"yum install perl-Data-Dumper\" if needed\n");
-        return;
-    }
     return if defined $MEMOIZE_CACHE{'PRECACHE'} and $MEMOIZE_CACHE{'PRECACHE'}->{'disabled'};
 
     print_start("Gathering some information, this may take a few moments...\n");
