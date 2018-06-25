@@ -34,7 +34,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.188';
+our $VERSION = '4.99.189';
 
 # Global variables that alter application runtime
 our $OPT_SKIP_NETWORKING;    # Disable network calls
@@ -96,6 +96,7 @@ sub init {
           get_external_ip
           get_external_license_ip
           get_hostinfo_href
+          get_hostname
           get_installed_ea4_php_href
           get_ipcs_href
           get_license_info
@@ -114,7 +115,6 @@ sub init {
           get_rpm_href
           get_tiers_file
           get_tiers_json_href
-          hostname
           )
     );
 
@@ -162,7 +162,15 @@ sub run {
         'docreport' => sub { init(); exit print_doc_bug_report(); },
         'no-network' => \$OPT_SKIP_NETWORKING,
         'no-speed'   => sub { $MEMOIZE_CACHE{'PRECACHE'} = { disabled => 1 }; },
-        'profiling'  => sub { require Time::HiRes; $MEMOIZE_CACHE{'PROFILING'} = { enabled => 1 }; },
+        'profiling'  => sub {
+            load_module_with_fallbacks(
+                'needed_subs'  => [qw{tv_interval gettimeofday}],
+                'modules'      => [qw{Time::HiRes}],
+                'fail_warning' => "Missing Perl Module: Time::HiRes -- Profiling won't work without this -- Try using /usr/local/cpanel/3rdparty/bin/perl?",
+                'fail_fatal'   => 1,
+            );
+            $MEMOIZE_CACHE{'PROFILING'} = { enabled => 1 };
+        },
         'simulatestate=s@' => sub { _simulate_run_state( $_[1] ); },
         'simulatevar=s%'   => sub { _simulate_run_var( $_[1], $_[2] ); },
         'timeout=i' => \$OPT_TIMEOUT,
@@ -362,7 +370,6 @@ sub run {
     check_for_bw_module_and_more_than_1024_vhosts();
     check_for_uppercase_chars_in_hostname();
     check_for_bad_permissions_on_named_ca();
-    check_for_use_compiled_dnsadmin();
     check_for_jailshell_additional_mounts_trailing_slash();
     check_for_allow_query_localhost();
     check_for_nocloudlinux_touchfile();
@@ -1358,7 +1365,7 @@ sub check_for_ea3 {
 ##############################
 
 sub print_hostname {
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     print_info('Hostname: ');
 
     if ( $hostname !~ /([\w-]+)\.([\w-]+)\.(\w+)/ ) {
@@ -1901,7 +1908,7 @@ sub check_for_remote_mysql {
                 }
             }
         }
-        elsif ( $mysql_host eq 'localhost' or $mysql_host eq hostname() ) {
+        elsif ( $mysql_host eq 'localhost' or $mysql_host eq get_hostname() ) {
             $mysql_is_local = 1;
         }
         if ( !$mysql_is_local ) {
@@ -2831,7 +2838,7 @@ sub check_ea4_paths_conf {
         'dir_run'              => '/run/apache2',
         'file_access_log'      => '/etc/apache2/logs/access_log',
         'file_conf'            => '/etc/apache2/conf/httpd.conf',
-        'file_conf_mime_types' => '/etc/mime.types',
+        'file_conf_mime_types' => '/etc/apache2/conf/mime.types',
         'file_conf_php_conf'   => '/etc/apache2/conf.d/php.conf',
         'file_conf_srm_conf'   => '/etc/apache2/conf.d/srm.conf',
         'file_error_log'       => '/etc/apache2/logs/error_log',
@@ -3206,7 +3213,7 @@ sub check_for_non_default_permissions {
         $check{'/usr/local/apache/bin/suexec'}      = { symlink => '/usr/sbin/suexec', check_missing => 1 };
         $check{'/usr/local/apache/conf/httpd.conf'} = { symlink => '/etc/apache2/conf/httpd.conf', check_missing => 1 };
         $check{'/usr/local/apache/conf/includes'}   = { symlink => '/etc/apache2/conf.d/includes', check_missing => 1 };
-        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/mime.types', check_missing => 1 };
+        $check{'/usr/local/apache/conf/mime.types'} = { symlink => '/etc/apache2/conf/mime.types', check_missing => 1 };
         $check{'/usr/local/apache/conf/php.conf'}   = { symlink => '/etc/apache2/conf.d/php.conf', check_missing => 1 };
         $check{'/usr/local/apache/domlogs'}         = { symlink => '/etc/apache2/logs/domlogs', check_missing => 1 };
         $check{'/usr/local/apache/htdocs'}          = { symlink => '/var/www/html', check_missing => 1 };
@@ -4611,7 +4618,7 @@ sub check_for_non_default_modsec_rules {
 sub check_etc_hosts_sanity {
     my $hosts = '/etc/hosts';
     my ( $localhost, $httpupdate, $localhost_not_127, $hostname_entry ) = ( 0, 0, 0, 0 );
-    my $hostname = hostname();
+    my $hostname = get_hostname();
 
     if ( !-f $hosts ) {
         print_warn("$hosts: ");
@@ -4877,7 +4884,7 @@ sub check_mysql_config {
     my %mysqld_checks = (
         'datadir'             => { default => '/var/lib/mysql' },
         'innodbforcerecovery' => { default => '0', help => 'Makes all InnoDB databases read-only, will break MySQL upgrades.' },
-        'logerror'            => { default => '/var/lib/mysql/' . hostname() . '.err' },
+        'logerror'            => { default => '/var/lib/mysql/' . get_hostname() . '.err' },
         'lowercasetablenames' => { default => '0', help => 'Will break space usage reporting of databases with mixed-case names. See CPANEL-8453.' },
         'oldpasswords'        => { default => '0', help => 'Not recommended, non-native passwords are incompatible with MySQL 5.6+ and some MySQL clients. See also CPANEL-10047, 10826, 10940, 10954, 11018, and 11019.' },
         'skipnameresolve'     => { help    => 'Seeing "Can\'t find any matching row"? That may be why.' },
@@ -5560,12 +5567,11 @@ sub check_for_rpm_overrides {
     }
 
     return unless -s $local_versions;
-    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require YAML::Syck; };
-    if ($@) {
-        print_warn('YAML::Syck: ');
-        print_warning('failed to load -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl');
-        return;
-    }
+    return if !load_module_with_fallbacks(
+        'needed_subs'  => [qw{LoadFile}],
+        'modules'      => [qw{YAML::Syck}],
+        'fail_warning' => 'Missing Perl Module: YAML::Syck -- SSP can\'t check rpm.versions.d/local.versions for customization -- Try using /usr/local/cpanel/3rdparty/bin/perl?',
+    );
 
     my $ignore = {
         'target_settings' => {
@@ -5956,7 +5962,7 @@ sub check_for_bw_module_and_more_than_1024_vhosts {
 }
 
 sub check_for_uppercase_chars_in_hostname {
-    if ( hostname() =~ /[A-Z]/ ) {
+    if ( get_hostname() =~ /[A-Z]/ ) {
         print_warn('Hostname: ');
         print_warning('contains UPPERCASE characters. Seeing incorrect info at cPanel >> Configure Email Client? See ticket 4231465');
     }
@@ -6003,39 +6009,6 @@ sub check_for_bad_permissions_on_named_ca {
         print_warn("${namedca}: ");
         print_warning('may not be readable to the \'named\' user, causing named to not restart');
     }
-}
-
-sub check_for_use_compiled_dnsadmin {
-    return unless i_am_one_of( 'cpanel', 'dnsonly' );
-    return if ( defined $CPCONF{'disable_compiled_dnsadmin'} and $CPCONF{'disable_compiled_dnsadmin'} == 1 );
-
-    my $has_custom_dnsadmin_modules;
-    my ( @setup_modules, @remote_modules );
-    my $setup_modules_dir  = '/usr/local/cpanel/Cpanel/NameServer/Remote';
-    my $remote_modules_dir = '/usr/local/cpanel/Cpanel/NameServer/Setup/Remote';
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Setup+Modules
-    if ( -d $setup_modules_dir ) {
-        opendir( my $dir_fh, $setup_modules_dir );
-        @setup_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    # http://documentation.cpanel.net/display/SDK/How+to+Write+Remote+Modules
-    if ( -d $remote_modules_dir ) {
-        opendir( my $dir_fh, $remote_modules_dir );
-        @remote_modules = grep { !/^\.\.?$/ } readdir $dir_fh;
-        closedir $dir_fh;
-    }
-
-    @setup_modules  = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @setup_modules;
-    @remote_modules = grep { !/^(cPanel\.pm|SoftLayer\.pm|VPSNET\.pm)/ } @remote_modules;
-
-    # return if there are no custom dnsadmin modules being used
-    return if ( scalar @setup_modules == 0 and scalar @remote_modules == 0 );
-
-    print_warn('dnsadmin: ');
-    print_warning('Tweak Settings >> Use compiled dnsadmin: On. If problems with custom dnsadmin modules, see if disabling helps (see ticket 4279965)');
 }
 
 sub check_for_jailshell_additional_mounts_trailing_slash {
@@ -6196,7 +6169,7 @@ sub check_for_suphp_but_no_fileprotect {
 
 sub check_if_hostname_missing_from_localdomains {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( open my $localdomains_fh, '<', '/etc/localdomains' ) {
         while (<$localdomains_fh>) {
             return if (/^${hostname}$/);
@@ -6531,7 +6504,7 @@ sub check_for_roundcube_overlay {
 
 sub check_for_hostname_park_zoneexists {
     return unless i_am('cpanel');
-    my $hostname = hostname();
+    my $hostname = get_hostname();
     if ( -f "/var/named/$hostname.db" and ( not defined $CPCONF{'allowparkonothers'} or $CPCONF{'allowparkonothers'} != 1 ) ) {
         print_warn('Parking: ');
         print_warning('since zone of hostname exists, "Allow domain parking across accounts" must be ON to park on the hostname');
@@ -8202,18 +8175,21 @@ sub print_profiling_data {
     }
 }
 
-sub decode_json {
-    my ($raw_json) = @_;
-    return unless my $json = json();
-    my $href;
-    eval { $href = $json->new->utf8->decode($raw_json); };    # All or nothing, just be quiet.
-    return $href;
-}
-
 sub get_tiers_json_href {
     my $raw = _http_get( Host => 'httpupdate.cpanel.net', Path => '/cpanelsync/TIERS.json' );
     return unless $raw;
-    my $href = decode_json($raw);
+
+    my $json = load_module_with_fallbacks(
+        'needed_subs'  => [qw{new utf8 decode}],
+        'modules'      => [qw{Cpanel::JSON::XS JSON::XS JSON::PP}],
+        'fail_warning' => "Missing Perl Modules: JSON -- TIERS.json can't be read without this -- Try using /usr/local/cpanel/3rdparty/bin/perl?",
+    );
+
+    return unless $json;
+    my $href;
+    local $@;
+    eval { $href = $json->new->utf8->decode($raw); };    # All or nothing, just be quiet.
+
     return if not exists $href->{'tiers'};
     return $href;
 }
@@ -8375,37 +8351,70 @@ sub os_version_is {
     return version_compare( $RUN_STATE->{var}->{os_version}, $mode, $ver );
 }
 
-# JSON
-{
-    my $json;
-    my $tried_import;
+sub get_hostname {
 
-    sub json {
-        return $json if $json;
-        return if $tried_import;
-        $json = import_json();
-        return $json;
+    # Return hostname() as-is on versions prior to 70.
+    if ( cpanel_version_is(qw( < 11.69.0.0 )) ) {
+        return hostname();
+    }
+    my $h = timed_run( 10, 'hostname', '-f' );
+    chomp $h if defined $h;
+    if ( not length($h) ) {    # Fall back to Sys::Hostname
+        $h = hostname();
+    }
+    return $h;
+}
+
+# SUB load_module_with_fallbacks(
+#   'modules'      => [ 'module1', 'module2', ... ],
+#   'needed_subs'  => [ 'do_needful', ... ],
+#   'fallback'     => sub { *do_needful = sub { ... }; return; },
+#   'fail_warning' => "Oops, something went wrong, you may want to do something about this",
+#   'fail_fatal'   => 1,
+# );
+#
+# Input is HASH of options:
+#   'modules'      => ARRAYREF of SCALAR strings corresponding to module names to attempt to import. These are attempted first.
+#   'needed_subs'  => ARRAYREF of SCALAR strings corresponding to subroutine names you need defined from the module(s).
+#   'fallback'     => CODEREF which defines the needed subs manually. Only used if all modules passed in above fail to load. Optional.
+#   'fail_warning' => SCALAR string that will convey a message to the user if the module(s) fail to load. Optional.
+#   'fail_fatal'   => BOOL whether you want to die if you fail to load the needed subs/modules via all available methods. Optional.
+#
+# Returns the module/namespace that loaded correctly, throws if all available attempts at finding the desired needed_subs subs fail and fail_fatal is passed.
+sub load_module_with_fallbacks {
+    my %opts = @_;
+    my $namespace_loaded;
+    foreach my $module2try ( @{ $opts{'modules'} } ) {
+
+        # Don't 'require' it if we already have it.
+        my $inc_entry = join( "/", split( "::", $module2try ) ) . ".pm";
+        if ( !$INC{$module2try} ) {
+            local $@;
+            next if !eval "require $module2try; 1";
+        }
+
+        # Check if the imported modules 'can' do the job
+        next if ( scalar( grep { $module2try->can($_) } @{ $opts{'needed_subs'} } ) != scalar( @{ $opts{'needed_subs'} } ) );
+
+        # Ok, we're good to go!
+        $namespace_loaded = $module2try;
+        last;
     }
 
-    sub import_json {
-        return if $tried_import;
-        $tried_import = 1;
-        my $try = _choose_json_package();
-        eval {
-            return unless $try->can('decode');
-            return unless $try->can('encode');
-            1;
-        } and return $try;
-    }
+    # Fallback to coderef, but don't do sanity checking on this, as it is presumed the caller "knows what they are doing" if passing a coderef.
+    if ( !$namespace_loaded ) {
+        if ( !$opts{'fallback'} || ref $opts{'fallback'} != 'CODE' ) {
+            print_warn("$opts{'fail_warning'}\n") if $opts{'fail_warning'};
+            die "Stopping here." if $opts{'fail_fatal'};
+        }
+        else {
+            $opts{'fallback'}->();
 
-    sub _choose_json_package {
-        return 'Cpanel::JSON::XS' if $INC{'Cpanel/JSON/XS.pm'};
-        return 'JSON::XS'         if $INC{'JSON/XS.pm'};
-        return 'Cpanel::JSON::XS' if eval { require Cpanel::JSON::XS; 1; };
-        return 'JSON::XS'         if eval { require JSON::XS; 1; };
-        return 'JSON::PP'         if eval { require JSON::PP; 1; };
+            # call like main::subroutine instead of Name::Space::subroutine
+            $namespace_loaded = 'main';
+        }
     }
-
+    return $namespace_loaded;
 }
 
 # Memoize
@@ -8444,12 +8453,11 @@ sub _memoize {    ## no critic (RequireArgUnpacking)
 
 sub _memoize_parallel_populate_cache {    ## no critic (RequireArgUnpacking)
                                           # We have to try conditionally loading Data::Dumper here instead of at BEGIN because the CentOS base 'perl' package does not include it, even though it is a core part of Perl.
-    eval { local $SIG{__DIE__}; local $SIG{__WARN__}; require Data::Dumper; };
-    if ($@) {
-        print_info('Perl Data::Dumper: ');
-        print_normal('not available -- SSP will take longer to run -- Use /usr/local/cpanel/3rdparty/bin/perl or "yum install perl-Data-Dumper" if needed');
-        return;
-    }
+    return if !load_module_with_fallbacks(
+        'needed_subs'  => [qw{Purity Terse Indent Dump new}],
+        'modules'      => [qw{Data::Dumper}],
+        'fail_warning' => 'Data::Dumper: SSP will take longer to run -- Use /usr/local/cpanel/3rdparty/bin/perl or "yum install perl-Data-Dumper" if needed',
+    );
     return if defined $MEMOIZE_CACHE{'PRECACHE'} and $MEMOIZE_CACHE{'PRECACHE'}->{'disabled'};
 
     print_start("Gathering some information, this may take a few moments...\n");
