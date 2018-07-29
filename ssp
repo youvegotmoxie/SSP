@@ -34,7 +34,7 @@ use Cwd qw(abs_path);
 use Getopt::Long();
 
 # Application version (IMPORTANT! Increment this before submitting a pull request)
-our $VERSION = '4.99.189';
+our $VERSION = '4.99.190';
 
 # Global variables that alter application runtime
 our $OPT_SKIP_NETWORKING;    # Disable network calls
@@ -329,6 +329,7 @@ sub run {
     check_for_non_default_modsec_rules();
     check_etc_hosts_sanity();
     check_localhost_resolution();
+    check_nospoof_hosts();
     check_for_apache_listen_host_is_localhost();
     check_roundcube_mysql_pass_mismatch();
     check_for_hooks_from_var_cpanel_hooks_yaml();
@@ -4667,6 +4668,17 @@ sub check_etc_hosts_sanity {
         print_warn("$hosts: ");
         print_warning("no entry found for the server's hostname! [$hostname] (Can break EA or Apache when mod_unique_id is enabled)");
     }
+}
+sub check_nospoof_hosts {
+    my $host_conf = "/etc/host.conf";
+    open(my $host_conf_fh, '<', $host_conf);
+        while (my $nospoof = <$host_conf_fh>) {
+            if ($nospoof =~ /nospoof(.*)/) {
+                chomp $nospoof;
+                print_warn("Invalid option '$nospoof' in $host_conf, this can cause issues with generating the /var/cpanel/sysinfo.config file\n");
+         }
+     }
+     close $host_conf_fh;
 }
 
 sub check_localhost_resolution {
